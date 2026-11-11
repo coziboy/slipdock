@@ -8,7 +8,7 @@ use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::*;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{Selectable, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::job::{self, DumpOptions};
@@ -18,7 +18,7 @@ use slipdock_core::{Error, platform, profile};
 
 use crate::run_view::RunView;
 use crate::state::core;
-use crate::widgets;
+use crate::widgets::{self, Tone};
 
 pub struct DumpView {
     profiles: Vec<String>,
@@ -222,68 +222,79 @@ impl DumpView {
     }
 
     fn render_form(&mut self, cx: &mut Context<Self>) -> Div {
-        let mut page = v_flex().gap_4().child(widgets::heading("Dump"));
+        let mut page = widgets::page().child(widgets::header(
+            "Dump",
+            "Copy a database from a server into a folder with mydumper.",
+            cx,
+        ));
         if self.profiles.is_empty() {
-            return page.child(widgets::hint(
+            return page.child(widgets::notice(
+                Tone::Info,
                 "No profiles yet. Create one on the Profiles screen.",
                 cx,
             ));
         }
 
         // 1. Profile
-        let mut profiles = h_flex().gap_2().flex_wrap();
+        let mut profiles = widgets::wrap_row();
         for (index, name) in self.profiles.iter().enumerate() {
             let picked = name.clone();
+            let chosen = self.profile.as_ref() == Some(name);
             profiles = profiles.child(
-                Button::new(("dump-profile", index))
-                    .label(name.clone())
-                    .selected(self.profile.as_ref() == Some(name))
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                widgets::choice(("dump-profile", index), name.clone(), chosen).on_click(
+                    cx.listener(move |this, _, window, cx| {
                         this.pick_profile(picked.clone(), window, cx)
-                    })),
+                    }),
+                ),
             );
         }
-        page = page.child(widgets::field("Profile", profiles, cx));
+        let mut source =
+            widgets::section("Source", cx).child(widgets::field("Profile", profiles, cx));
         if self.profile.is_none() {
-            return page;
+            return page.child(source);
         }
 
         // 2. Database
-        let mut databases = h_flex().gap_2().flex_wrap();
+        let mut databases = widgets::wrap_row();
         for (index, name) in self.databases.iter().enumerate() {
             let picked = name.clone();
             databases = databases.child(
                 Button::new(("dump-db", index))
                     .small()
+                    .outline()
+                    .max_w_full()
                     .label(name.clone())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.pick_database(picked.clone(), window, cx)
                     })),
             );
         }
-        page = page
-            .child(widgets::field(
-                "Database",
-                h_flex()
-                    .gap_2()
-                    .child(div().flex_1().child(Input::new(&self.database)))
-                    .child(
-                        Button::new("list-tables")
-                            .label("List tables")
-                            .on_click(cx.listener(|this, _, _, cx| this.list_tables(cx))),
-                    ),
-                cx,
-            ))
-            .when(!self.databases.is_empty(), |this| {
-                this.child(widgets::field("", databases, cx))
-            })
-            .when_some(self.list_note.clone(), |this, note| {
-                this.child(widgets::field("", widgets::hint(note, cx), cx))
-            });
+        source = source.child(widgets::field(
+            "Database",
+            v_flex()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().flex_1().min_w_0().child(Input::new(&self.database)))
+                        .child(
+                            Button::new("list-tables")
+                                .label("List tables")
+                                .on_click(cx.listener(|this, _, _, cx| this.list_tables(cx))),
+                        ),
+                )
+                .when(!self.databases.is_empty(), |this| this.child(databases))
+                .when_some(self.list_note.clone(), |this, note| {
+                    this.child(widgets::hint(note, cx))
+                }),
+            cx,
+        ));
+        page = page.child(source);
 
         // 3. Tables and views to leave out
+        let mut leave_out = widgets::section("Leave out", cx);
         if !self.tables.is_empty() {
-            let mut checklist = v_flex().gap_1();
+            let mut checklist = v_flex().gap_1p5();
             for (index, (table, excluded)) in self.tables.iter().enumerate() {
                 let label = if table.is_view {
                     format!("{}  (view)", table.name)
@@ -292,6 +303,8 @@ impl DumpView {
                 };
                 checklist = checklist.child(
                     Checkbox::new(("exclude", index))
+                        // Bounded by its parent, so a long label wraps.
+                        .w_full()
                         .label(label)
                         .checked(*excluded)
                         .on_click(cx.listener(move |this, checked: &bool, _, cx| {
@@ -300,20 +313,41 @@ impl DumpView {
                         })),
                 );
             }
-            page = page.child(widgets::field("Leave out", checklist, cx));
+            leave_out = leave_out.child(widgets::field(
+                "Tables",
+                // A database can have hundreds of tables: the list scrolls
+                // on its own, so the rest of the form stays in reach.
+                div()
+                    .id("exclude-list")
+                    .max_h(px(220.))
+                    .overflow_y_scroll()
+                    .p_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .child(checklist),
+                cx,
+            ));
         }
-        page = page.child(widgets::field(
+        leave_out = leave_out.child(widgets::field(
             if self.tables.is_empty() {
-                "Leave out"
+                "Tables"
             } else {
-                "Also leave out"
+                "Also"
             },
-            Input::new(&self.exclude),
+            v_flex()
+                .gap_1()
+                .child(Input::new(&self.exclude))
+                .child(widgets::hint(
+                    "Names of tables and views that are not dumped, separated by commas.",
+                    cx,
+                )),
             cx,
         ));
+        page = page.child(leave_out);
 
         // 4. Folder and log level
-        let mut levels = h_flex().gap_2();
+        let mut levels = widgets::wrap_row();
         let choices: [(Option<u8>, &str); 5] = [
             (None, "From profile"),
             (Some(0), "0 silent"),
@@ -323,47 +357,41 @@ impl DumpView {
         ];
         for (index, (level, label)) in choices.into_iter().enumerate() {
             levels = levels.child(
-                Button::new(("dump-level", index))
-                    .small()
-                    .label(label)
-                    .selected(self.level == level)
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                widgets::choice(("dump-level", index), label, self.level == level).on_click(
+                    cx.listener(move |this, _, _, cx| {
                         this.level = level;
                         cx.notify();
-                    })),
+                    }),
+                ),
             );
         }
-        page = page
-            .child(widgets::field("Folder", Input::new(&self.out), cx))
-            .child(widgets::field("Log level", levels, cx));
+        page = page.child(
+            widgets::section("Output", cx)
+                .child(widgets::field("Folder", Input::new(&self.out), cx))
+                .child(widgets::field("Log level", levels, cx)),
+        );
 
         // 5. Preview and run
         page = page.child(
-            h_flex()
-                .gap_2()
-                .child(
-                    Button::new("dump-dry")
-                        .label("Dry run (show command)")
-                        .disabled(self.busy)
-                        .on_click(cx.listener(|this, _, _, cx| this.prepare(true, cx))),
-                )
+            widgets::wrap_row()
                 .child(
                     Button::new("dump-run")
                         .primary()
                         .label("Run dump")
                         .disabled(self.busy)
                         .on_click(cx.listener(|this, _, _, cx| this.prepare(false, cx))),
+                )
+                .child(
+                    Button::new("dump-dry")
+                        .outline()
+                        .label("Dry run (show command)")
+                        .disabled(self.busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.prepare(true, cx))),
                 ),
         );
         match &self.preview {
             Some(Ok((summary, command))) => {
-                page = page
-                    .child(widgets::lines(summary, cx))
-                    .child(widgets::mono(command, cx))
-                    .when(command.contains("slipdock-"), |this| {
-                        this.child(widgets::hint(job::TEMPORARY_DEFAULTS_NOTE, cx))
-                    })
-                    .child(widgets::hint("(dry run, nothing executed)", cx));
+                page = page.child(widgets::preview(summary, command, cx));
             }
             Some(Err(error)) => page = page.child(widgets::error_text(error.clone(), cx)),
             None => {}
@@ -377,18 +405,24 @@ impl Render for DumpView {
         // While a run exists, it takes the place of the form.
         if let Some(run) = self.run.clone() {
             let finished = run.read(cx).is_finished();
-            return v_flex()
-                .gap_4()
-                .child(widgets::heading("Dump"))
+            return widgets::page()
+                .child(widgets::header(
+                    "Dump",
+                    "Copy a database from a server into a folder with mydumper.",
+                    cx,
+                ))
                 .child(run)
                 .when(finished, |this| {
                     this.child(
-                        h_flex().child(Button::new("dump-back").label("Back").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.run = None;
-                                cx.notify();
-                            }),
-                        )),
+                        h_flex().child(
+                            Button::new("dump-back")
+                                .outline()
+                                .label("Back to the form")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.run = None;
+                                    cx.notify();
+                                })),
+                        ),
                     )
                 });
         }

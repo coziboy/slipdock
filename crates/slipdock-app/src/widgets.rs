@@ -2,67 +2,226 @@
 //!
 //! In GPUI a piece of UI is a value you build with method chains, much like
 //! HTML with utility classes: `div().flex().gap_2().child(...)`. The
-//! functions here return such values, so screens can say `heading("Dump")`
+//! functions here return such values, so screens can say `header("Dump", ..)`
 //! instead of repeating the same chain.
+//!
+//! GPUI concept: **layout that follows the window**. GPUI lays elements out
+//! with flexbox, and three rules keep content inside a window of any size:
+//!
+//! - A row that may hold more than fits gets `flex_wrap()`, so the rest
+//!   continues on the next line instead of running out of the window.
+//! - A flex child never gets narrower than its content unless it has
+//!   `min_w_0()`. With it, long text (a path, a host name) wraps.
+//! - `flex_basis(width)` with `flex_grow(1.)` says "I want this much, and
+//!   take what is left". In a wrapping row, an item whose basis no longer
+//!   fits moves to the next line and fills it. `field` uses this to put the
+//!   control under its label in a narrow window.
 
-use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
+use gpui_kit::component::button::*;
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use slipdock_core::job;
 use slipdock_core::report::Line;
 
-pub fn heading(text: impl Into<SharedString>) -> Div {
-    div()
-        .text_xl()
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(text.into())
+/// The top of a screen: its name and one line about what it is for.
+pub fn header(title: &'static str, about: &'static str, cx: &App) -> Div {
+    v_flex()
+        .gap_1()
+        .min_w_0()
+        .child(
+            div()
+                .text_2xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title),
+        )
+        .child(hint(about, cx))
 }
 
-pub fn subheading(text: impl Into<SharedString>) -> Div {
-    div()
-        .mt_3()
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(text.into())
+/// A screen: sections under each other.
+pub fn page() -> Div {
+    v_flex().gap_5().w_full().min_w_0()
 }
 
 /// Small grey text for explanations.
 pub fn hint(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
+        .min_w_0()
         .text_sm()
         .text_color(cx.theme().muted_foreground)
         .child(text.into())
 }
 
-pub fn error_text(text: impl Into<SharedString>, cx: &App) -> Div {
-    div()
-        .text_sm()
-        .text_color(cx.theme().danger)
-        .child(text.into())
-}
-
-/// A form row: a fixed-width label, then the control.
+/// A form row: a fixed-width label, then the control. When the window is
+/// too narrow for both, the control moves under the label.
 pub fn field(label: &'static str, control: impl IntoElement, cx: &App) -> Div {
     h_flex()
-        .gap_3()
-        .items_center()
+        .flex_wrap()
+        .items_start()
+        .gap_x_3()
+        .gap_y_1()
         .child(
-            div()
+            // As high as an input, so the label sits beside its first line.
+            h_flex()
                 .w(px(110.))
+                .h(px(32.))
                 .flex_shrink_0()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(label),
         )
-        .child(div().flex_1().min_w_0().child(control))
+        .child(
+            div()
+                .flex_grow(1.)
+                .flex_basis(px(220.))
+                .min_w_0()
+                .child(control),
+        )
+}
+
+/// A row of things that continues on the next line when it is full: choice
+/// buttons, action buttons.
+pub fn wrap_row() -> Div {
+    h_flex().flex_wrap().gap_2().min_w_0()
+}
+
+/// One of several choices (a profile, a log level). The chosen one is
+/// filled.
+pub fn choice(id: impl Into<ElementId>, label: impl Into<SharedString>, chosen: bool) -> Button {
+    let button = Button::new(id).label(label).max_w_full().selected(chosen);
+    if chosen {
+        button.primary()
+    } else {
+        button.outline()
+    }
 }
 
 /// A bordered box that groups related things.
 pub fn card(cx: &App) -> Div {
+    let theme = cx.theme();
     v_flex()
-        .gap_2()
+        .gap_3()
         .p_4()
+        .min_w_0()
         .rounded_lg()
         .border_1()
-        .border_color(cx.theme().border)
+        .border_color(theme.border)
+        .bg(theme.background)
+}
+
+/// A card with a small title.
+pub fn section(title: impl Into<SharedString>, cx: &App) -> Div {
+    card(cx).child(
+        div()
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(cx.theme().muted_foreground)
+            .child(title.into().to_uppercase()),
+    )
+}
+
+/// A row in a list that can be clicked as a whole (a dump, a profile). Its
+/// text wraps, which the label of a button cannot do. The caller adds the
+/// content and, unless it is off, `on_click`.
+pub fn option_row(
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    chosen: bool,
+    off: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let theme = cx.theme();
+    h_flex()
+        .id(id)
+        // The row is drawn by us, so we say what it is for screen readers.
+        .role(Role::Button)
+        .aria_label(name)
+        .gap_3()
+        .px_3()
+        .py_2()
+        .min_w_0()
+        .rounded_md()
+        .border_1()
+        .border_color(if chosen { theme.primary } else { theme.border })
+        .when(chosen, |this| this.bg(theme.accent))
+        .when(off, |this| this.opacity(0.55))
+        .when(!off, |this| {
+            let hover = theme.accent;
+            this.cursor_pointer().hover(move |style| style.bg(hover))
+        })
+}
+
+/// The mark at the start of an `option_row`: filled when chosen.
+pub fn option_mark(chosen: bool, cx: &App) -> Div {
+    let theme = cx.theme();
+    div()
+        .size(px(14.))
+        .flex_shrink_0()
+        .rounded_full()
+        .border_1()
+        .border_color(if chosen {
+            theme.primary
+        } else {
+            theme.muted_foreground
+        })
+        .when(chosen, |this| this.border_4())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Success,
+    Danger,
+    Warning,
+    Info,
+}
+
+/// A small coloured label for a state: "complete", "partial", "missing".
+pub fn tag(text: impl Into<SharedString>, tone: Tone) -> Tag {
+    let tag = match tone {
+        Tone::Success => Tag::success(),
+        Tone::Danger => Tag::danger(),
+        Tone::Warning => Tag::warning(),
+        Tone::Info => Tag::secondary(),
+    };
+    tag.outline().small().child(text.into())
+}
+
+/// A message in a tinted box, with an icon for its tone.
+pub fn notice(tone: Tone, text: &str, cx: &App) -> Div {
+    let theme = cx.theme();
+    let (color, icon) = match tone {
+        Tone::Success => (theme.success, IconName::CircleCheck),
+        Tone::Danger => (theme.danger, IconName::CircleX),
+        Tone::Warning => (theme.warning, IconName::TriangleAlert),
+        Tone::Info => (theme.muted_foreground, IconName::Info),
+    };
+    let mut body = v_flex().flex_1().min_w_0().text_sm();
+    for line in text.lines() {
+        body = body.child(div().child(line.to_string()));
+    }
+    h_flex()
+        .items_start()
+        .gap_2()
+        .p_3()
+        .min_w_0()
+        .rounded_md()
+        .border_1()
+        .border_color(color.opacity(0.35))
+        .bg(color.opacity(0.08))
+        .child(
+            // As high as a line of the text, so the icon sits beside the
+            // first line.
+            h_flex()
+                .h(px(20.))
+                .flex_shrink_0()
+                .child(Icon::new(icon).small().text_color(color)),
+        )
+        .child(body)
+}
+
+pub fn error_text(text: impl Into<SharedString>, cx: &App) -> Div {
+    notice(Tone::Danger, &text.into(), cx)
 }
 
 /// Text in a fixed-width font, one element per line so line breaks and
@@ -71,7 +230,10 @@ pub fn mono(text: &str, cx: &App) -> Div {
     let theme = cx.theme();
     let mut block = v_flex()
         .p_3()
+        .min_w_0()
         .rounded_md()
+        .border_1()
+        .border_color(theme.border)
         .bg(theme.muted)
         .font_family(theme.mono_font_family.clone())
         .text_sm();
@@ -83,14 +245,42 @@ pub fn mono(text: &str, cx: &App) -> Div {
     block
 }
 
+/// What a dry run shows: the summary, the command, and that nothing ran.
+pub fn preview(summary: &[Line], command: &str, cx: &App) -> Div {
+    section("Dry run", cx)
+        .child(lines(summary, cx))
+        .child(mono(command, cx))
+        .when(command.contains("slipdock-"), |this| {
+            this.child(hint(job::TEMPORARY_DEFAULTS_NOTE, cx))
+        })
+        .child(hint("Nothing was executed.", cx))
+}
+
+/// An icon with a line of text beside it; the text wraps.
+fn marked(icon: IconName, color: Hsla, text: Div) -> Div {
+    h_flex()
+        .items_start()
+        .gap_2()
+        .min_w_0()
+        .child(
+            h_flex()
+                .h(px(24.))
+                .flex_shrink_0()
+                .child(Icon::new(icon).small().text_color(color)),
+        )
+        .child(text.flex_1().min_w_0())
+}
+
 /// Draws a summary or report from the core. The command line tool prints
 /// the same `Line` values with terminal colours; here they become elements.
 pub fn lines(lines: &[Line], cx: &App) -> Div {
     let theme = cx.theme();
     let muted = theme.muted_foreground;
-    let note =
-        move |note: &Option<String>| note.clone().map(|note| div().text_color(muted).child(note));
-    let mut column = v_flex().gap_1();
+    let note = move |note: &Option<String>| {
+        note.clone()
+            .map(|note| div().text_sm().text_color(muted).child(note))
+    };
+    let mut column = v_flex().gap_1().min_w_0();
     for line in lines {
         let row = match line {
             Line::Title(text) => div().font_weight(FontWeight::SEMIBOLD).child(text.clone()),
@@ -100,8 +290,9 @@ pub fn lines(lines: &[Line], cx: &App) -> Div {
                 note: row_note,
                 strong,
             } => h_flex()
-                .gap_3()
+                .flex_wrap()
                 .items_start()
+                .gap_x_3()
                 .child(
                     div()
                         .w(px(90.))
@@ -110,30 +301,40 @@ pub fn lines(lines: &[Line], cx: &App) -> Div {
                         .child(label.clone()),
                 )
                 .child(
-                    div()
-                        // Lets a long value (a path) wrap instead of running
-                        // out of the window.
+                    // The note goes under the value, so a long value (a
+                    // path) and a long note (a server) each get the full
+                    // width to wrap in.
+                    v_flex()
+                        .flex_grow(1.)
+                        .flex_basis(px(200.))
                         .min_w_0()
-                        .when(*strong, |this| this.font_weight(FontWeight::BOLD))
-                        .child(value.clone()),
-                )
-                .children(note(row_note)),
+                        .child(
+                            div()
+                                .when(*strong, |this| this.font_weight(FontWeight::BOLD))
+                                .child(value.clone()),
+                        )
+                        .children(note(row_note)),
+                ),
             Line::Ok {
                 text,
                 note: ok_note,
-            } => h_flex()
-                .gap_2()
-                .child(div().text_color(theme.success).child("✓"))
-                .child(div().font_weight(FontWeight::SEMIBOLD).child(text.clone()))
-                .children(note(ok_note)),
-            Line::Fail(text) => h_flex()
-                .gap_2()
-                .child(div().text_color(theme.danger).child("✗"))
-                .child(div().font_weight(FontWeight::SEMIBOLD).child(text.clone())),
-            Line::Warn(text) => h_flex()
-                .gap_2()
-                .child(div().text_color(theme.warning).child("!"))
-                .child(div().child(text.clone())),
+            } => marked(
+                IconName::CircleCheck,
+                theme.success,
+                v_flex()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(text.clone()))
+                    .children(note(ok_note)),
+            ),
+            Line::Fail(text) => marked(
+                IconName::CircleX,
+                theme.danger,
+                div().font_weight(FontWeight::SEMIBOLD).child(text.clone()),
+            ),
+            Line::Warn(text) => marked(
+                IconName::TriangleAlert,
+                theme.warning,
+                div().child(text.clone()),
+            ),
             Line::Text(text) => div().pl_4().child(text.trim_start().to_string()),
             Line::Dim(text) => div().pl_4().text_color(muted).child(text.clone()),
             Line::Blank => div().h_2(),

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::*;
-use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::exec;
@@ -15,7 +15,7 @@ use slipdock_core::platform;
 use slipdock_core::tools::{self, InstallPlan, Status, Tool};
 
 use crate::state::{Core, core};
-use crate::widgets;
+use crate::widgets::{self, Tone};
 
 /// A package install can take a while (downloads, compiling).
 const INSTALL_LIMIT: Duration = Duration::from_secs(30 * 60);
@@ -97,7 +97,7 @@ impl ToolsView {
         .detach();
     }
 
-    fn show_install(&mut self, tool: Tool, cx: &mut Context<Self>) {
+    pub(crate) fn show_install(&mut self, tool: Tool, cx: &mut Context<Self>) {
         let ctx = core(cx);
         let mut dirs = ctx.dirs.path.clone();
         dirs.extend(ctx.dirs.usual.iter().cloned());
@@ -157,10 +157,22 @@ impl ToolsView {
         let chosen = status.chosen();
         let mut card = widgets::card(cx).child(
             h_flex()
-                .gap_3()
+                .flex_wrap()
                 .items_center()
-                .child(div().font_weight(FontWeight::SEMIBOLD).child(tool.name()))
-                .child(widgets::hint(tool.purpose(), cx)),
+                .gap_x_3()
+                .gap_y_1()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(tool.name()),
+                )
+                .child(widgets::hint(tool.purpose(), cx).flex_1())
+                .child(if chosen.is_some() {
+                    widgets::tag("ready", Tone::Success)
+                } else {
+                    widgets::tag("not found", Tone::Danger)
+                }),
         );
 
         match chosen {
@@ -170,27 +182,40 @@ impl ToolsView {
                     .as_ref()
                     .expect("the chosen candidate works");
                 let source = if status.configured.is_some() {
-                    "  (set by you)"
+                    " · set by you"
                 } else {
                     ""
                 };
                 card = card.child(
                     h_flex()
+                        .items_start()
                         .gap_2()
-                        .child(div().text_color(cx.theme().success).child("✓"))
-                        .child(format!(
-                            "{}   version {}{source}",
-                            ctx.show_path(&candidate.path),
-                            working.version
-                        )),
+                        .child(
+                            h_flex().h(px(24.)).flex_shrink_0().child(
+                                Icon::new(IconName::CircleCheck)
+                                    .small()
+                                    .text_color(cx.theme().success),
+                            ),
+                        )
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_sm()
+                                        .line_height(px(24.))
+                                        .child(ctx.show_path(&candidate.path)),
+                                )
+                                .child(widgets::hint(
+                                    format!("version {}{source}", working.version),
+                                    cx,
+                                )),
+                        ),
                 );
                 if let Some(warning) = working.version_warning(tool) {
-                    card = card.child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().warning)
-                            .child(warning),
-                    );
+                    card = card.child(widgets::notice(Tone::Warning, &warning, cx));
                 }
             }
             None => {
@@ -213,16 +238,31 @@ impl ToolsView {
             let path = candidate.path.clone();
             card = card.child(
                 h_flex()
-                    .gap_3()
+                    .flex_wrap()
                     .items_center()
-                    .child(widgets::hint(
-                        format!("{}   {verdict}", ctx.show_path(&candidate.path)),
-                        cx,
-                    ))
+                    .gap_x_3()
+                    .gap_y_1()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        v_flex()
+                            .flex_grow(1.)
+                            .flex_basis(px(240.))
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_sm()
+                                    .child(ctx.show_path(&candidate.path)),
+                            )
+                            .child(widgets::hint(verdict, cx)),
+                    )
                     .when(candidate.result.is_ok(), |this| {
                         this.child(
                             Button::new((tool.name(), index))
                                 .small()
+                                .outline()
                                 .label("Use this one")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.set_path(tool, Some(path.clone()), cx)
@@ -232,20 +272,7 @@ impl ToolsView {
             );
         }
 
-        let mut buttons = h_flex().gap_2().mt_1().child(
-            Button::new((tool.name(), 100usize))
-                .small()
-                .label("Choose file…")
-                .on_click(cx.listener(move |this, _, _, cx| this.choose_file(tool, cx))),
-        );
-        if status.configured.is_some() {
-            buttons = buttons.child(
-                Button::new((tool.name(), 101usize))
-                    .small()
-                    .label("Search automatically")
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_path(tool, None, cx))),
-            );
-        }
+        let mut buttons = widgets::wrap_row().pt_1();
         if chosen.is_none() {
             buttons = buttons.child(
                 Button::new((tool.name(), 102usize))
@@ -255,11 +282,27 @@ impl ToolsView {
                     .on_click(cx.listener(move |this, _, _, cx| this.show_install(tool, cx))),
             );
         }
+        buttons = buttons.child(
+            Button::new((tool.name(), 100usize))
+                .small()
+                .outline()
+                .label("Choose file…")
+                .on_click(cx.listener(move |this, _, _, cx| this.choose_file(tool, cx))),
+        );
+        if status.configured.is_some() {
+            buttons = buttons.child(
+                Button::new((tool.name(), 101usize))
+                    .small()
+                    .outline()
+                    .label("Search automatically")
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_path(tool, None, cx))),
+            );
+        }
         card.child(buttons)
     }
 
     fn render_install(&self, tool: Tool, plan: &InstallPlan, cx: &mut Context<Self>) -> Div {
-        let card = widgets::card(cx).child(widgets::subheading(format!("Install {tool}")));
+        let card = widgets::section(format!("Install {tool}"), cx);
         match plan {
             InstallPlan::Command { program, args } => card
                 .child(widgets::hint(
@@ -268,8 +311,7 @@ impl ToolsView {
                 ))
                 .child(widgets::mono(&format!("{program} {}", args.join(" ")), cx))
                 .child(
-                    h_flex()
-                        .gap_2()
+                    widgets::wrap_row()
                         .child(
                             Button::new("run-install")
                                 .primary()
@@ -280,6 +322,7 @@ impl ToolsView {
                         )
                         .child(
                             Button::new("close-install")
+                                .outline()
                                 .label("Close")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.install = None;
@@ -300,14 +343,34 @@ impl ToolsView {
 
 impl Render for ToolsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut page = v_flex()
-            .gap_4()
-            .child(widgets::heading("Tools"))
-            .child(widgets::hint(
-                "Slipdock runs mydumper and myloader for you. It never downloads them: \
-                 it finds what is installed, or shows how to install it with your package manager.",
-                cx,
-            ));
+        let mut page = widgets::page().child(
+            h_flex()
+                .flex_wrap()
+                .items_start()
+                .justify_between()
+                .gap_3()
+                .child(
+                    widgets::header(
+                        "Tools",
+                        "Slipdock runs mydumper and myloader for you. It never downloads them: \
+                         it finds what is installed, or shows how to install it with your package manager.",
+                        cx,
+                    )
+                    .flex_grow(1.)
+                    .flex_basis(px(280.)),
+                )
+                .child(
+                    Button::new("recheck")
+                        .outline()
+                        .icon(IconName::RefreshCw)
+                        .label("Check again")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.statuses = None;
+                            this.reload(cx);
+                            cx.notify();
+                        })),
+                ),
+        );
 
         match &self.statuses {
             None => page = page.child(widgets::hint("Checking…", cx)),
@@ -321,18 +384,8 @@ impl Render for ToolsView {
             page = page.child(self.render_install(tool, &plan, cx));
         }
         if let Some(message) = &self.message {
-            page = page.child(widgets::mono(message, cx));
+            page = page.child(widgets::notice(Tone::Info, message, cx));
         }
-        page.child(
-            h_flex().child(
-                Button::new("recheck")
-                    .label("Check again")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.statuses = None;
-                        this.reload(cx);
-                        cx.notify();
-                    })),
-            ),
-        )
+        page
     }
 }

@@ -14,7 +14,8 @@ use std::path::PathBuf;
 
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::*;
-use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::dumps;
@@ -148,17 +149,27 @@ impl Render for RunView {
         });
 
         v_flex()
-            .gap_4()
-            .child(widgets::lines(&self.summary, cx))
+            .gap_5()
+            .min_w_0()
+            .child(widgets::card(cx).child(widgets::lines(&self.summary, cx)))
             .when(running, |this| {
                 this.child(
                     h_flex()
-                        .gap_4()
+                        .flex_wrap()
                         .items_center()
+                        .justify_between()
+                        .gap_3()
                         .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(status.unwrap_or_else(|| self.label.to_string())),
+                            h_flex()
+                                .gap_2()
+                                .min_w_0()
+                                .child(Spinner::new().small())
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(status.unwrap_or_else(|| self.label.to_string())),
+                                ),
                         )
                         .child(
                             Button::new("cancel-run")
@@ -179,18 +190,21 @@ impl Render for RunView {
                 this.child(
                     v_flex()
                         .gap_1()
+                        .min_w_0()
                         .child(widgets::hint(format!("Log: {}", self.log.display()), cx))
                         .child(widgets::mono(&self.tail.join("\n"), cx)),
                 )
             })
             .when_some(self.report.as_ref(), |this, report| {
+                let color = if report.success {
+                    cx.theme().success
+                } else {
+                    cx.theme().danger
+                };
                 this.child(
                     widgets::card(cx)
-                        .border_color(if report.success {
-                            cx.theme().success
-                        } else {
-                            cx.theme().danger
-                        })
+                        .border_color(color.opacity(0.5))
+                        .bg(color.opacity(0.06))
                         .child(widgets::lines(&report.lines, cx)),
                 )
             })

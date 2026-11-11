@@ -3,13 +3,13 @@
 use std::path::PathBuf;
 
 use gpui_kit::component::button::*;
-use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex};
 use gpui_kit::*;
 use slipdock_core::dumps::{self, DumpInfo};
 use slipdock_core::profile;
 
 use crate::state::core;
-use crate::widgets;
+use crate::widgets::{self, Tone};
 
 pub struct DumpsView {
     /// Each dump root with its dumps, newest first. `None` while loading.
@@ -52,14 +52,26 @@ impl DumpsView {
 impl Render for DumpsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ctx = core(cx);
-        let mut page = v_flex().gap_4().child(
+        let border = cx.theme().border;
+        let mut page = widgets::page().child(
             h_flex()
-                .gap_4()
-                .items_center()
-                .child(widgets::heading("Dumps"))
+                .flex_wrap()
+                .items_start()
+                .justify_between()
+                .gap_3()
+                .child(
+                    widgets::header(
+                        "Dumps",
+                        "Every dump in the dump folders of your profiles, newest first.",
+                        cx,
+                    )
+                    .flex_grow(1.)
+                    .flex_basis(px(280.)),
+                )
                 .child(
                     Button::new("refresh-dumps")
-                        .small()
+                        .outline()
+                        .icon(IconName::RefreshCw)
                         .label("Refresh")
                         .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                 ),
@@ -68,16 +80,31 @@ impl Render for DumpsView {
             return page.child(widgets::hint("Reading…", cx));
         };
         if roots.is_empty() {
-            return page.child(widgets::hint(
+            return page.child(widgets::notice(
+                Tone::Info,
                 "No profile has a dump-dir yet. Set one on the Profiles screen.",
                 cx,
             ));
         }
         for (root_index, (root, found)) in roots.iter().enumerate() {
-            let mut card = widgets::card(cx).child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(ctx.show_path(root)),
+            let mut card = widgets::card(cx).gap_0().child(
+                h_flex()
+                    .items_start()
+                    .gap_2()
+                    .pb_2()
+                    .child(
+                        h_flex()
+                            .h(px(24.))
+                            .flex_shrink_0()
+                            .child(Icon::new(IconName::Folder).small()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(ctx.show_path(root)),
+                    ),
             );
             if found.is_empty() {
                 card = card.child(widgets::hint("No dumps here.", cx));
@@ -85,36 +112,50 @@ impl Render for DumpsView {
             for (index, dump) in found.iter().enumerate() {
                 let path = dump.path.clone();
                 let state = if dump.complete {
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().success)
-                        .child("complete")
+                    widgets::tag("complete", Tone::Success)
                 } else {
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().warning)
-                        .child("partial")
+                    widgets::tag("partial", Tone::Warning)
                 };
                 card = card.child(
+                    // The name takes the room that is left. In a narrow
+                    // window the details move under it.
                     h_flex()
-                        .gap_3()
+                        .flex_wrap()
                         .items_center()
+                        .gap_x_4()
+                        .gap_y_1()
+                        .py_2()
+                        .border_t_1()
+                        .border_color(border)
                         .child(
                             div()
-                                .w(px(60.))
-                                .text_sm()
-                                .child(dumps::human_size(dump.size)),
+                                .flex_grow(1.)
+                                .flex_basis(px(260.))
+                                .min_w_0()
+                                .child(dump.name.clone()),
                         )
-                        .child(div().flex_1().child(dump.name.clone()))
-                        .child(widgets::hint(format!("{} tables", dump.tables), cx))
-                        .child(div().w(px(70.)).child(state))
                         .child(
-                            Button::new(("reveal", root_index * 10_000 + index))
-                                .xsmall()
-                                .ghost()
-                                .label("Show")
-                                // Opens the file manager with the folder selected.
-                                .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                            h_flex()
+                                .gap_3()
+                                .flex_shrink_0()
+                                .child(widgets::hint(
+                                    format!(
+                                        "{} tables · {}",
+                                        dump.tables,
+                                        dumps::human_size(dump.size)
+                                    ),
+                                    cx,
+                                ))
+                                .child(state)
+                                .child(
+                                    Button::new(("reveal", root_index * 10_000 + index))
+                                        .small()
+                                        .ghost()
+                                        .icon(IconName::FolderOpen)
+                                        .label("Show")
+                                        // Opens the file manager with the folder selected.
+                                        .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                                ),
                         ),
                 );
             }

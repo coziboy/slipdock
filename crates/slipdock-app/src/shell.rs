@@ -16,8 +16,8 @@
 //!   to. The view says which actions it handles with `.on_action(...)`; the
 //!   key bindings are set once in `main.rs`.
 
-use gpui_kit::component::button::*;
-use gpui_kit::component::{ActiveTheme, Selectable, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::profile;
 
@@ -47,13 +47,23 @@ impl Screen {
         Screen::Tools,
     ];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Screen::Dump => "Dump",
             Screen::Load => "Load",
             Screen::Dumps => "Dumps",
             Screen::Profiles => "Profiles",
             Screen::Tools => "Tools",
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Screen::Dump => IconName::ArrowDown,
+            Screen::Load => IconName::ArrowUp,
+            Screen::Dumps => IconName::Folder,
+            Screen::Profiles => IconName::Globe,
+            Screen::Tools => IconName::SquareTerminal,
         }
     }
 }
@@ -64,7 +74,7 @@ pub struct Shell {
     pub(crate) load: Entity<LoadView>,
     dumps: Entity<DumpsView>,
     pub(crate) profiles: Entity<ProfilesView>,
-    tools: Entity<ToolsView>,
+    pub(crate) tools: Entity<ToolsView>,
     /// Lets the window deliver key presses (and so actions) to this view.
     focus: FocusHandle,
 }
@@ -106,36 +116,100 @@ impl Shell {
     }
 }
 
-impl Render for Shell {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+/// Below this window width the navigation moves from the side to the top.
+const COMPACT_BELOW: Pixels = px(760.);
 
-        let mut navigation = v_flex()
-            .w(px(170.))
+impl Render for Shell {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        // GPUI concept: `render` runs again when the window is resized, so
+        // the layout can depend on the window's size. Most of the app adapts
+        // by wrapping (see `widgets.rs`); only this frame switches layout.
+        let compact = window.viewport_size().width < COMPACT_BELOW;
+
+        let brand = v_flex()
+            .px_2()
             .flex_shrink_0()
-            .h_full()
-            .gap_1()
-            .p_3()
-            .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.sidebar_border)
             .child(
                 div()
-                    .px_2()
-                    .pb_3()
                     .text_lg()
                     .font_weight(FontWeight::BOLD)
                     .child("Slipdock"),
-            );
+            )
+            .when(!compact, |this| {
+                this.pb_3().child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("MySQL dump and load"),
+                )
+            });
+
+        let mut items = if compact {
+            h_flex().flex_wrap().gap_1()
+        } else {
+            v_flex().gap_1()
+        };
         for (index, screen) in Screen::ALL.into_iter().enumerate() {
-            navigation = navigation.child(
-                Button::new(("nav", index))
-                    .ghost()
-                    .label(screen.label())
-                    .selected(self.screen == screen)
+            let active = self.screen == screen;
+            let hover = theme.sidebar_accent;
+            items = items.child(
+                h_flex()
+                    .id(("nav", index))
+                    .role(Role::Button)
+                    .aria_label(screen.label())
+                    .gap_2()
+                    .px_2()
+                    .py_1p5()
+                    .rounded_md()
+                    .text_sm()
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .when(active, |this| {
+                        this.bg(theme.sidebar_accent)
+                            .text_color(theme.sidebar_accent_foreground)
+                            .font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .child(Icon::new(screen.icon()).small())
+                    .child(div().flex_1().child(screen.label()))
+                    .when(!compact, |this| {
+                        // The key that `main.rs` binds to this screen.
+                        this.child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::NORMAL)
+                                .text_color(theme.muted_foreground)
+                                .child(format!("⌘{}", index + 1)),
+                        )
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| this.show(screen, cx))),
             );
         }
+
+        let navigation = if compact {
+            h_flex()
+                .flex_wrap()
+                .flex_shrink_0()
+                .w_full()
+                .gap_x_3()
+                .gap_y_1()
+                .px_3()
+                .py_2()
+                .border_b_1()
+        } else {
+            v_flex()
+                .w(px(210.))
+                .flex_shrink_0()
+                .h_full()
+                .gap_1()
+                .p_3()
+                .border_r_1()
+        }
+        .bg(theme.sidebar)
+        .text_color(theme.sidebar_foreground)
+        .border_color(theme.sidebar_border)
+        .child(brand)
+        .child(items);
 
         // An `Entity<V>` where V implements Render can be used as a child.
         let content: AnyView = match self.screen {
@@ -148,6 +222,7 @@ impl Render for Shell {
 
         div()
             .flex()
+            .when(compact, |this| this.flex_col())
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
@@ -162,13 +237,26 @@ impl Render for Shell {
                 div()
                     .id("content")
                     .flex_1()
-                    // Without this a flex child never gets narrower than its
-                    // content, and long lines would push past the window.
+                    // Without these a flex child never gets smaller than its
+                    // content: long lines would push past the window, and a
+                    // long page would not scroll.
                     .min_w_0()
-                    .h_full()
+                    .min_h_0()
                     .overflow_y_scroll()
-                    .p_6()
-                    .child(content),
+                    .child(
+                        // On a wide window the page keeps a readable width
+                        // and sits in the middle.
+                        div()
+                            .w_full()
+                            .max_w(px(980.))
+                            .mx_auto()
+                            .when(compact, |this| this.p_4())
+                            .when(!compact, |this| this.p_6())
+                            .child(content),
+                    )
+                    // Lets the tests find this element by its id. Without
+                    // the `test-support` feature this does nothing.
+                    .test_support(),
             )
     }
 }

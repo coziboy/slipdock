@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme, Selectable, Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::dumps::{self, DumpInfo};
@@ -20,7 +20,7 @@ use slipdock_core::{Error, profile};
 
 use crate::run_view::RunView;
 use crate::state::core;
-use crate::widgets;
+use crate::widgets::{self, Tone};
 
 pub struct LoadView {
     profiles: Vec<String>,
@@ -229,6 +229,7 @@ impl LoadView {
                         .child(
                             v_flex()
                                 .p_3()
+                                .min_w_0()
                                 .rounded_md()
                                 .bg(cx.theme().muted)
                                 .child(
@@ -245,8 +246,10 @@ impl LoadView {
                                 ),
                         )
                         .child(widgets::hint(format!("Dump: {dump}"), cx))
-                        .child(div().text_color(cx.theme().danger).child(
+                        .child(widgets::notice(
+                            Tone::Danger,
                             "Tables in the dump are dropped and recreated in the target database.",
+                            cx,
                         ))
                         .child(format!("Click the field and type {target} to continue:"))
                         .child(Input::new(&input)),
@@ -255,12 +258,15 @@ impl LoadView {
                     h_flex()
                         .gap_2()
                         .justify_end()
-                        .child(Button::new("load-cancel").label("Cancel").on_click(
-                            move |_, window, cx| {
-                                window.close_dialog(cx);
-                                cancel_view.update(cx, |this, _| this.pending = None);
-                            },
-                        ))
+                        .child(
+                            Button::new("load-cancel")
+                                .outline()
+                                .label("Cancel")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    cancel_view.update(cx, |this, _| this.pending = None);
+                                }),
+                        )
                         .child(
                             Button::new("load-start")
                                 .danger()
@@ -311,68 +317,84 @@ impl LoadView {
     }
 
     fn render_form(&mut self, cx: &mut Context<Self>) -> Div {
-        let mut page = v_flex().gap_4().child(widgets::heading("Load"));
+        let mut page = widgets::page().child(widgets::header(
+            "Load",
+            "Put a dump into a database with myloader. Tables in the dump are dropped and recreated.",
+            cx,
+        ));
         if self.profiles.is_empty() {
-            return page.child(widgets::hint(
+            return page.child(widgets::notice(
+                Tone::Info,
                 "No profiles yet. Create one on the Profiles screen.",
                 cx,
             ));
         }
 
-        let mut profiles = h_flex().gap_2().flex_wrap();
+        let mut profiles = widgets::wrap_row();
         for (index, name) in self.profiles.iter().enumerate() {
             let picked = name.clone();
+            let chosen = self.profile.as_ref() == Some(name);
             profiles = profiles.child(
-                Button::new(("load-profile", index))
-                    .label(name.clone())
-                    .selected(self.profile.as_ref() == Some(name))
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.pick_profile(picked.clone(), cx)),
-                    ),
+                widgets::choice(("load-profile", index), name.clone(), chosen).on_click(
+                    cx.listener(move |this, _, _, cx| this.pick_profile(picked.clone(), cx)),
+                ),
             );
         }
-        page = page.child(widgets::field("Load into", profiles, cx));
+        page = page.child(widgets::section("Destination", cx).child(widgets::field(
+            "Load into",
+            profiles,
+            cx,
+        )));
         if self.profile.is_none() {
             return page;
         }
 
         // Dumps, newest first. A partial dump cannot be loaded.
-        let mut list = v_flex().gap_1();
+        let mut list = widgets::section("Dump", cx);
         if self.dumps.is_empty() {
             list = list.child(widgets::hint("No dumps in this profile's dump folder.", cx));
         }
         for (index, dump) in self.dumps.iter().enumerate() {
+            let chosen = self.dump.as_ref() == Some(&dump.path);
             let note = if dump.complete {
                 format!("{} tables · {}", dump.tables, dumps::human_size(dump.size))
             } else {
-                "partial, cannot be loaded".to_string()
+                "cannot be loaded".to_string()
             };
             list = list.child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(
-                        Button::new(("load-dump", index))
-                            .small()
-                            .ghost()
-                            .label(dump.name.clone())
-                            .selected(self.dump.as_ref() == Some(&dump.path))
-                            .disabled(!dump.complete)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.pick_dump(index, window, cx)
-                            })),
+                widgets::option_row(
+                    ("load-dump", index),
+                    dump.name.clone(),
+                    chosen,
+                    !dump.complete,
+                    cx,
+                )
+                .child(widgets::option_mark(chosen, cx))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().child(dump.name.clone()))
+                        .child(widgets::hint(note, cx)),
+                )
+                .when(!dump.complete, |this| {
+                    this.child(widgets::tag("partial", Tone::Warning))
+                })
+                .when(dump.complete, |this| {
+                    this.on_click(
+                        cx.listener(move |this, _, window, cx| this.pick_dump(index, window, cx)),
                     )
-                    .child(widgets::hint(note, cx)),
+                }),
             );
         }
-        page = page.child(widgets::field("Dump", list, cx));
+        page = page.child(list);
         if self.dump.is_none() {
             return page.when_some(self.preview.clone().and_then(|p| p.err()), |this, error| {
                 this.child(widgets::error_text(error, cx))
             });
         }
 
-        let mut levels = h_flex().gap_2();
+        let mut levels = widgets::wrap_row();
         let choices: [(Option<u8>, &str); 5] = [
             (None, "From profile"),
             (Some(0), "0 silent"),
@@ -382,28 +404,22 @@ impl LoadView {
         ];
         for (index, (level, label)) in choices.into_iter().enumerate() {
             levels = levels.child(
-                Button::new(("load-level", index))
-                    .small()
-                    .label(label)
-                    .selected(self.level == level)
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                widgets::choice(("load-level", index), label, self.level == level).on_click(
+                    cx.listener(move |this, _, _, cx| {
                         this.level = level;
                         cx.notify();
-                    })),
+                    }),
+                ),
             );
         }
         page = page
-            .child(widgets::field("Target", Input::new(&self.target), cx))
-            .child(widgets::field("Log level", levels, cx))
             .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("load-dry")
-                            .label("Dry run (show command)")
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, _, cx| this.dry_run(cx))),
-                    )
+                widgets::section("Target", cx)
+                    .child(widgets::field("Database", Input::new(&self.target), cx))
+                    .child(widgets::field("Log level", levels, cx)),
+            )
+            .child(
+                widgets::wrap_row()
                     .child(
                         Button::new("load-run")
                             .danger()
@@ -412,17 +428,18 @@ impl LoadView {
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.request_load(window, cx)),
                             ),
+                    )
+                    .child(
+                        Button::new("load-dry")
+                            .outline()
+                            .label("Dry run (show command)")
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.dry_run(cx))),
                     ),
             );
         match &self.preview {
             Some(Ok((summary, command))) => {
-                page = page
-                    .child(widgets::lines(summary, cx))
-                    .child(widgets::mono(command, cx))
-                    .when(command.contains("slipdock-"), |this| {
-                        this.child(widgets::hint(job::TEMPORARY_DEFAULTS_NOTE, cx))
-                    })
-                    .child(widgets::hint("(dry run, nothing executed)", cx));
+                page = page.child(widgets::preview(summary, command, cx));
             }
             Some(Err(error)) => page = page.child(widgets::error_text(error.clone(), cx)),
             None => {}
@@ -435,18 +452,24 @@ impl Render for LoadView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(run) = self.run.clone() {
             let finished = run.read(cx).is_finished();
-            return v_flex()
-                .gap_4()
-                .child(widgets::heading("Load"))
+            return widgets::page()
+                .child(widgets::header(
+                    "Load",
+                    "Put a dump into a database with myloader.",
+                    cx,
+                ))
                 .child(run)
                 .when(finished, |this| {
                     this.child(
-                        h_flex().child(Button::new("load-back").label("Back").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.run = None;
-                                cx.notify();
-                            }),
-                        )),
+                        h_flex().child(
+                            Button::new("load-back")
+                                .outline()
+                                .label("Back to the form")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.run = None;
+                                    cx.notify();
+                                })),
+                        ),
                     )
                 });
         }

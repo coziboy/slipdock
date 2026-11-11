@@ -11,7 +11,7 @@
 //! | application, window       | `main.rs`       |
 //! | global state              | `state.rs`      |
 //! | entity, context, render, actions | `shell.rs` |
-//! | elements as values        | `widgets.rs`    |
+//! | elements as values, layout that follows the window | `widgets.rs` |
 //! | background tasks          | `run_view.rs`, `tools_view.rs` |
 //! | text inputs               | `profiles_view.rs` |
 //! | events, dialogs           | `load_view.rs`  |
@@ -84,6 +84,8 @@ fn main() {
                 size(px(1040.), px(760.)),
                 cx,
             ))),
+            // Every screen fits in this; below it the window stops shrinking.
+            window_min_size: Some(size(px(520.), px(420.))),
             titlebar: Some(TitlebarOptions {
                 title: Some("Slipdock".into()),
                 ..Default::default()

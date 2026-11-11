@@ -8,14 +8,14 @@
 use gpui_kit::component::button::*;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{ActiveTheme, Selectable, Sizable, h_flex, v_flex};
+use gpui_kit::component::{IconName, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::profile::{self, PasswordStore, Profile, SECTION};
 use slipdock_core::{Error, Result, secrets};
 
 use crate::state::core;
-use crate::widgets;
+use crate::widgets::{self, Tone};
 
 pub struct ProfilesView {
     profiles: Vec<Profile>,
@@ -187,42 +187,59 @@ impl ProfilesView {
             "Kept in the profile file (readable only by you)."
         };
         widgets::card(cx)
-            .flex_1()
-            .min_w_0()
-            .child(widgets::subheading(profile.name.clone()).mt_0())
-            .child(widgets::hint(core(cx).show_path(&profile.path), cx))
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(profile.name.clone()),
+                    )
+                    .child(widgets::hint(core(cx).show_path(&profile.path), cx)),
+            )
             .child(widgets::field("Host", Input::new(&self.host), cx))
             .child(widgets::field("Port", Input::new(&self.port), cx))
             .child(widgets::field("User", Input::new(&self.user), cx))
-            .child(widgets::field("Password", Input::new(&self.password).mask_toggle(), cx))
-            .child(widgets::field("", widgets::hint(password_hint, cx), cx))
             .child(widgets::field(
-                "",
-                Checkbox::new("keychain")
-                    .label("Keep the password in the system keychain")
-                    .checked(self.keychain)
-                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                        this.keychain = *checked;
-                        cx.notify();
-                    })),
+                "Password",
+                v_flex()
+                    .gap_2()
+                    .child(Input::new(&self.password).mask_toggle())
+                    .child(widgets::hint(password_hint, cx))
+                    .child(
+                        Checkbox::new("keychain")
+                            // Bounded by its parent, so a long label wraps.
+                            .w_full()
+                            .label("Keep the password in the system keychain")
+                            .checked(self.keychain)
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.keychain = *checked;
+                                cx.notify();
+                            })),
+                    ),
                 cx,
             ))
             .child(widgets::field("Dump folder", Input::new(&self.dump_dir), cx))
             .child(widgets::field(
-                "",
-                Checkbox::new("tls-off")
-                    .label("Do not check the server's TLS certificate (still encrypted)")
-                    .checked(self.tls_off)
-                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                        this.tls_off = *checked;
-                        cx.notify();
-                    })),
+                "TLS",
+                // As high as an input, so the box lines up with its label.
+                h_flex().min_h(px(32.)).child(
+                    Checkbox::new("tls-off")
+                        // Bounded by its parent, so a long label wraps.
+                        .w_full()
+                        .label("Do not check the server's certificate (still encrypted)")
+                        .checked(self.tls_off)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.tls_off = *checked;
+                            cx.notify();
+                        })),
+                ),
                 cx,
             ))
             .child(
-                h_flex()
-                    .gap_2()
-                    .mt_2()
+                widgets::wrap_row()
+                    .pt_1()
                     .child(
                         Button::new("save-profile")
                             .primary()
@@ -231,6 +248,8 @@ impl ProfilesView {
                     )
                     .child(
                         Button::new("open-profile")
+                            .outline()
+                            .icon(IconName::ExternalLink)
                             .label("Open file")
                             .tooltip("Threads, rows and the other mydumper/myloader options are edited in the file")
                             .on_click(move |_, _, cx| cx.open_with_system(&path)),
@@ -249,49 +268,53 @@ fn list_or_none(names: &[String]) -> String {
 
 impl Render for ProfilesView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = v_flex().w(px(240.)).flex_shrink_0().gap_1();
+        let mut list = v_flex().gap_2().min_w_0();
         for (index, profile) in self.profiles.iter().enumerate() {
             let name = profile.name.clone();
-            let mut notes = profile.target();
-            if profile.tls_verify_off() {
-                notes.push_str("  · TLS check off");
-            }
+            let chosen = self.selected.as_ref() == Some(&profile.name);
             list = list.child(
-                v_flex()
+                widgets::option_row(("profile", index), profile.name.clone(), chosen, false, cx)
                     .child(
-                        Button::new(("profile", index))
-                            .ghost()
-                            .label(profile.name.clone())
-                            .selected(self.selected.as_ref() == Some(&profile.name))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select(&name, window, cx)
-                            })),
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(profile.name.clone()),
+                            )
+                            .child(widgets::hint(profile.target(), cx)),
                     )
-                    .child(widgets::hint(notes, cx).pl_3()),
+                    .when(profile.tls_verify_off(), |this| {
+                        this.child(widgets::tag("TLS check off", Tone::Warning))
+                    })
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.select(&name, window, cx)),
+                    ),
             );
         }
         if self.profiles.is_empty() {
             list = list.child(widgets::hint("No profiles yet. Create one below.", cx));
         }
-        list = list
-            .child(
-                h_flex()
-                    .gap_2()
-                    .mt_4()
-                    .child(div().flex_1().child(Input::new(&self.new_name)))
-                    .child(
-                        Button::new("create-profile")
-                            .label("New")
-                            .on_click(cx.listener(|this, _, window, cx| this.create(window, cx))),
-                    ),
-            )
-            .child(
-                Button::new("import-mydb")
-                    .small()
-                    .label("Import from mydb")
-                    .tooltip("Copies ~/.config/mydb/*.cnf. Existing profiles and the originals are not changed.")
-                    .on_click(cx.listener(|this, _, _, cx| this.import(cx))),
-            );
+        list = list.child(
+            h_flex()
+                .gap_2()
+                .pt_2()
+                .child(div().flex_1().min_w_0().child(Input::new(&self.new_name)))
+                .child(
+                    Button::new("create-profile")
+                        .icon(IconName::Plus)
+                        .label("New")
+                        .on_click(cx.listener(|this, _, window, cx| this.create(window, cx))),
+                ),
+        )
+        .child(
+            Button::new("import-mydb")
+                .outline()
+                .label("Import from mydb")
+                .tooltip("Copies ~/.config/mydb/*.cnf. Existing profiles and the originals are not changed.")
+                .on_click(cx.listener(|this, _, _, cx| this.import(cx))),
+        );
 
         let selected = self
             .selected
@@ -299,26 +322,32 @@ impl Render for ProfilesView {
             .and_then(|name| self.profiles.iter().find(|profile| &profile.name == name));
         let form = match selected {
             Some(profile) => self.render_form(profile, cx),
-            None => div()
-                .flex_1()
+            None => widgets::card(cx)
+                .items_center()
+                .py_8()
                 .child(widgets::hint("Select a profile to edit it.", cx)),
         };
 
-        v_flex()
-            .gap_4()
-            .child(widgets::heading("Profiles"))
-            .child(widgets::hint(
+        widgets::page()
+            .child(widgets::header(
+                "Profiles",
                 "A profile is one defaults file with the connection settings of an environment.",
                 cx,
             ))
             .when_some(self.message.clone(), |this, (ok, text)| {
-                let color = if ok {
-                    cx.theme().success
-                } else {
-                    cx.theme().danger
-                };
-                this.child(div().text_sm().text_color(color).child(text))
+                let tone = if ok { Tone::Success } else { Tone::Danger };
+                this.child(widgets::notice(tone, &text, cx))
             })
-            .child(h_flex().gap_6().items_start().child(list).child(form))
+            .child(
+                // List and form side by side. Each has a width it wants
+                // (`flex_basis`); when the window cannot give both, the form
+                // moves under the list and both take the full width.
+                h_flex()
+                    .flex_wrap()
+                    .items_start()
+                    .gap_5()
+                    .child(list.flex_grow(1.).flex_basis(px(250.)))
+                    .child(form.flex_grow(3.).flex_basis(px(380.))),
+            )
     }
 }
