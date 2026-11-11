@@ -1,4 +1,5 @@
-//! Load: profile -> dump -> target database -> confirmation -> run.
+//! Load: profile to load into -> dump (of that profile or of another one)
+//! -> target database -> confirmation -> run.
 //!
 //! A load drops and recreates tables. So the last step is a dialog that
 //! shows where the data is going, and "Start load" stays off until the name
@@ -16,21 +17,36 @@ use gpui_kit::*;
 use slipdock_core::dumps::{self, DumpInfo};
 use slipdock_core::job::{self, LoadOptions, LoadPlan};
 use slipdock_core::report::Line;
-use slipdock_core::{Error, profile};
+use slipdock_core::{Error, profile, server};
 
 use crate::run_view::RunView;
-use crate::state::core;
+use crate::state::{core, log_options};
 use crate::widgets::{self, Tone};
 
 pub struct LoadView {
     profiles: Vec<String>,
+    /// The profile whose server is loaded into.
     profile: Option<String>,
-    /// The dumps in the profile's dump folder, newest first.
+    /// The profile whose dump folder is listed, when it is not `profile`:
+    /// a dump taken from one server can be loaded into another.
+    source: Option<String>,
+    /// The dumps in the dump folder of `dumps_from`, newest first.
     pub(crate) dumps: Vec<DumpInfo>,
+    /// The dump folder is being read.
+    listing: bool,
     dump: Option<PathBuf>,
-    target: Entity<InputState>,
-    level: Option<u8>,
+    pub(crate) target: Entity<InputState>,
+    /// The databases on the server of `profile`, to pick the target from.
+    pub(crate) databases: Vec<String>,
+    /// The server is being asked for its databases.
+    listing_databases: bool,
+    /// Why the server of `profile` did not answer. While this is set the
+    /// rest of the form is not shown.
+    pub(crate) connect_error: Option<String>,
     pub(crate) preview: Option<Result<(Vec<Line>, String), String>>,
+    /// A command is being prepared. Nothing is drawn for it: preparing takes
+    /// a moment too short to read a loader in, so one would only flash. It
+    /// keeps a second click from starting the same thing twice.
     busy: bool,
     /// The typed database name in the confirmation dialog.
     pub(crate) confirm: Entity<InputState>,
@@ -39,6 +55,7 @@ pub struct LoadView {
     pub(crate) run: Option<Entity<RunView>>,
     /// A subscription ends when it is dropped, so the view keeps it.
     _subscription: Subscription,
+    _target_subscription: Subscription,
 }
 
 impl LoadView {
@@ -54,19 +71,32 @@ impl LoadView {
                     window.refresh();
                 }
             });
+        let target = cx.new(|cx| InputState::new(window, cx).placeholder("target database"));
+        // The database button that matches the typed name is filled, so the
+        // form is drawn again when the name changes.
+        let target_subscription = cx.subscribe(&target, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
         let mut view = LoadView {
             profiles: Vec::new(),
             profile: None,
+            source: None,
+            databases: Vec::new(),
+            listing_databases: false,
+            connect_error: None,
             dumps: Vec::new(),
+            listing: false,
             dump: None,
-            target: cx.new(|cx| InputState::new(window, cx).placeholder("target database")),
-            level: None,
+            target,
             preview: None,
             busy: false,
             confirm,
             pending: None,
             run: None,
             _subscription: subscription,
+            _target_subscription: target_subscription,
         };
         view.reload(cx);
         view
@@ -78,6 +108,15 @@ impl LoadView {
             && !self.profiles.contains(name)
         {
             self.profile = None;
+            self.databases.clear();
+            self.connect_error = None;
+            self.dumps.clear();
+            self.dump = None;
+        }
+        if let Some(name) = &self.source
+            && !self.profiles.contains(name)
+        {
+            self.source = None;
             self.dumps.clear();
             self.dump = None;
         }
@@ -85,8 +124,39 @@ impl LoadView {
         cx.notify();
     }
 
+    /// The profile whose dump folder is listed.
+    pub(crate) fn dumps_from(&self) -> Option<&String> {
+        self.source.as_ref().or(self.profile.as_ref())
+    }
+
+    /// Chooses the profile to load into. The dumps follow it, unless
+    /// another profile was chosen for them: then they stay as they are.
     pub(crate) fn pick_profile(&mut self, name: String, cx: &mut Context<Self>) {
-        self.profile = Some(name);
+        let from_before = self.dumps_from().cloned();
+        // Loading into the profile the dumps are of is the plain case.
+        if self.source.as_ref() == Some(&name) {
+            self.source = None;
+        }
+        if self.profile.as_ref() != Some(&name) {
+            self.profile = Some(name);
+            self.list_databases(cx);
+        }
+        self.preview = None;
+        if self.dumps_from().cloned() != from_before {
+            self.dump = None;
+            self.dumps.clear();
+            self.list_dumps(cx);
+        }
+        cx.notify();
+    }
+
+    /// Chooses the profile whose dumps are listed.
+    pub(crate) fn pick_source(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.dumps_from() == Some(&name) {
+            return;
+        }
+        // The profile that is loaded into needs no separate choice.
+        self.source = (self.profile.as_ref() != Some(&name)).then_some(name);
         self.dump = None;
         self.dumps.clear();
         self.preview = None;
@@ -94,11 +164,47 @@ impl LoadView {
         cx.notify();
     }
 
-    fn list_dumps(&mut self, cx: &mut Context<Self>) {
+    /// Asks the server that is loaded into for its databases, in the
+    /// background. Without an answer the name is typed.
+    pub(crate) fn list_databases(&mut self, cx: &mut Context<Self>) {
         let Some(name) = self.profile.clone() else {
             return;
         };
         let ctx = core(cx);
+        self.databases.clear();
+        self.connect_error = None;
+        self.listing_databases = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn({
+                    let name = name.clone();
+                    async move { server::databases(&ctx, &ctx.profile(&name)?) }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // An answer for a profile that is no longer chosen is dropped.
+                if this.profile.as_ref() != Some(&name) {
+                    return;
+                }
+                this.listing_databases = false;
+                match result {
+                    Ok(databases) => this.databases = databases,
+                    Err(error) => this.connect_error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn list_dumps(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self.dumps_from().cloned() else {
+            return;
+        };
+        let ctx = core(cx);
+        self.listing = true;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -108,8 +214,18 @@ impl LoadView {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.listing = false;
                 match result {
-                    Ok(dumps) => this.dumps = dumps,
+                    Ok(dumps) => {
+                        // The chosen dump may have been deleted meanwhile.
+                        if let Some(chosen) = &this.dump
+                            && !dumps.iter().any(|dump| &dump.path == chosen)
+                        {
+                            this.dump = None;
+                            this.preview = None;
+                        }
+                        this.dumps = dumps;
+                    }
                     Err(error) => this.preview = Some(Err(error.to_string())),
                 }
                 cx.notify();
@@ -133,12 +249,13 @@ impl LoadView {
 
     fn options(&self, dry_run: bool, cx: &App) -> LoadOptions {
         let target = self.target.read(cx).value().trim().to_string();
+        let (log_level, extra_args) = log_options(dry_run);
         LoadOptions {
             profile: self.profile.clone().unwrap_or_default(),
             dir: self.dump.clone().unwrap_or_default(),
             target: (!target.is_empty()).then_some(target),
-            log_level: self.level,
-            extra_args: Vec::new(),
+            log_level,
+            extra_args,
             dry_run,
         }
     }
@@ -146,11 +263,14 @@ impl LoadView {
     /// Dry run: plan, prepare and show the command. Nothing is asked,
     /// because nothing is changed.
     pub(crate) fn dry_run(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         let ctx = core(cx);
         let options = self.options(true, cx);
+        // The command that is on show stays until the new one takes its
+        // place, so the page does not jump.
         self.busy = true;
-        self.preview = None;
-        cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -172,6 +292,9 @@ impl LoadView {
 
     /// Real load, step 1: check everything, then ask.
     pub(crate) fn request_load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         let ctx = core(cx);
         let options = self.options(false, cx);
         self.busy = true;
@@ -226,6 +349,9 @@ impl LoadView {
                 .child(
                     v_flex()
                         .gap_3()
+                        // Room for the ring of the focused field, which the
+                        // dialog would cut off at its edge.
+                        .p_1()
                         .child(
                             v_flex()
                                 .p_3()
@@ -345,23 +471,66 @@ impl LoadView {
             profiles,
             cx,
         )));
-        if self.profile.is_none() {
+        let Some(into) = self.profile.clone() else {
             return page;
+        };
+        // The rest of the form waits for the server's answer, and is not
+        // shown when there is none: a load into a server that cannot be
+        // reached would fail anyway.
+        if self.listing_databases {
+            return page.child(
+                widgets::card(cx).child(widgets::loading(format!("Connecting with {into}…"), cx)),
+            );
+        }
+        if let Some(error) = self.connect_error.clone() {
+            return page.child(widgets::connection_failed(
+                &into,
+                &error,
+                Button::new("load-retry")
+                    .on_click(cx.listener(|this, _, _, cx| this.list_databases(cx))),
+                cx,
+            ));
         }
 
         // Dumps, newest first. A partial dump cannot be loaded.
         let mut list = widgets::section("Dump", cx);
-        if self.dumps.is_empty() {
+        // With one profile there is nothing to choose from.
+        if self.profiles.len() > 1 {
+            let mut sources = widgets::wrap_row();
+            for (index, name) in self.profiles.iter().enumerate() {
+                let picked = name.clone();
+                let chosen = self.dumps_from() == Some(name);
+                sources = sources.child(
+                    widgets::choice(("load-source", index), name.clone(), chosen).on_click(
+                        cx.listener(move |this, _, _, cx| this.pick_source(picked.clone(), cx)),
+                    ),
+                );
+            }
+            let crossing = self.source.as_ref().zip(self.profile.as_ref());
+            list = list.child(widgets::field(
+                "Dumps of",
+                v_flex()
+                    .gap_2()
+                    .child(sources)
+                    .when_some(crossing, |this, (from, into)| {
+                        this.child(widgets::notice(
+                            Tone::Warning,
+                            &format!("A dump of {from} will be loaded into {into}."),
+                            cx,
+                        ))
+                    }),
+                cx,
+            ));
+        }
+        if self.listing {
+            list = list.child(widgets::loading("Reading the dump folder…", cx));
+        } else if self.dumps.is_empty() {
             list = list.child(widgets::hint("No dumps in this profile's dump folder.", cx));
         }
         for (index, dump) in self.dumps.iter().enumerate() {
             let chosen = self.dump.as_ref() == Some(&dump.path);
-            let note = if dump.complete {
-                format!("{} tables · {}", dump.tables, dumps::human_size(dump.size))
-            } else {
-                "cannot be loaded".to_string()
-            };
             list = list.child(
+                // The same row as on the Dumps screen, without its actions.
                 widgets::option_row(
                     ("load-dump", index),
                     dump.name.clone(),
@@ -369,16 +538,21 @@ impl LoadView {
                     !dump.complete,
                     cx,
                 )
-                .child(widgets::option_mark(chosen, cx))
+                .flex_wrap()
+                .gap_y_1()
                 .child(
-                    v_flex()
-                        .flex_1()
+                    h_flex()
+                        .flex_grow(1.)
+                        .flex_basis(px(300.))
                         .min_w_0()
-                        .child(div().child(dump.name.clone()))
-                        .child(widgets::hint(note, cx)),
+                        .gap_3()
+                        .child(widgets::option_mark(chosen, cx))
+                        .child(widgets::dump_summary(dump, cx).flex_1()),
                 )
-                .when(!dump.complete, |this| {
-                    this.child(widgets::tag("partial", Tone::Warning))
+                .child(if dump.complete {
+                    widgets::dump_stats(dump, cx)
+                } else {
+                    widgets::hint("cannot be loaded", cx)
                 })
                 .when(dump.complete, |this| {
                     this.on_click(
@@ -394,46 +568,48 @@ impl LoadView {
             });
         }
 
-        let mut levels = widgets::wrap_row();
-        let choices: [(Option<u8>, &str); 5] = [
-            (None, "From profile"),
-            (Some(0), "0 silent"),
-            (Some(1), "1 errors"),
-            (Some(2), "2 warnings"),
-            (Some(3), "3 info"),
-        ];
-        for (index, (level, label)) in choices.into_iter().enumerate() {
-            levels = levels.child(
-                widgets::choice(("load-level", index), label, self.level == level).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.level = level;
-                        cx.notify();
-                    }),
-                ),
-            );
-        }
+        // The databases of the server that is loaded into. A name that is
+        // not among them can still be typed.
+        let typed = self.target.read(cx).value().to_string();
+        let databases = widgets::database_list(
+            "load-databases",
+            &self.databases,
+            &typed,
+            |name| {
+                Box::new(cx.listener(move |this, _, window, cx| {
+                    this.target
+                        .update(cx, |input, cx| input.set_value(name.clone(), window, cx));
+                    this.preview = None;
+                    cx.notify();
+                }))
+            },
+            cx,
+        );
+        let database = v_flex()
+            .gap_2()
+            .child(Input::new(&self.target).cleanable(true))
+            .children(databases);
         page = page
             .child(
                 widgets::section("Target", cx)
-                    .child(widgets::field("Database", Input::new(&self.target), cx))
-                    .child(widgets::field("Log level", levels, cx)),
+                    .child(widgets::field("Database", database, cx))
+                    .child(widgets::hint(
+                        "A full log of the load is written beside the dump. The Dumps \
+                         screen shows it.",
+                        cx,
+                    )),
             )
             .child(
                 widgets::wrap_row()
                     .child(
-                        Button::new("load-run")
-                            .danger()
-                            .label("Load…")
-                            .disabled(self.busy)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.request_load(window, cx)),
-                            ),
+                        Button::new("load-run").danger().label("Load…").on_click(
+                            cx.listener(|this, _, window, cx| this.request_load(window, cx)),
+                        ),
                     )
                     .child(
                         Button::new("load-dry")
                             .outline()
-                            .label("Dry run (show command)")
-                            .disabled(self.busy)
+                            .label("Show command")
                             .on_click(cx.listener(|this, _, _, cx| this.dry_run(cx))),
                     ),
             );
