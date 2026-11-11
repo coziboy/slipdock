@@ -6,7 +6,10 @@
 //! `std::sync::mpsc` channel.
 
 pub mod error;
+pub mod exec;
 pub mod platform;
 pub mod profile;
+pub mod settings;
+pub mod tools;
 
 pub use error::{Error, Result};
