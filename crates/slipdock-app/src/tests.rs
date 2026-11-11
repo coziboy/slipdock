@@ -240,3 +240,201 @@ fn every_screen_draws(cx: &mut TestAppContext) {
         window.render_frame(cx);
     });
 }
+
+/// Fills in every screen, with a dry run on Dump and Load.
+fn fill_every_screen(shell: &Entity<Shell>, cx: &mut VisualTestContext) {
+    let (dump, load, profiles) = shell.read_with(cx, |shell, _| {
+        (
+            shell.dump.clone(),
+            shell.load.clone(),
+            shell.profiles.clone(),
+        )
+    });
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.pick_profile("example".into(), window, cx);
+            view.database
+                .update(cx, |input, cx| input.set_value("example_db", window, cx));
+            view.prepare(true, cx);
+        });
+        load.update(cx, |view, cx| view.pick_profile("example".into(), cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        load.update(cx, |view, cx| {
+            view.pick_dump(0, window, cx);
+            view.dry_run(cx);
+        });
+        profiles.update(cx, |view, cx| view.select("example", window, cx));
+    });
+    cx.run_until_parked();
+}
+
+/// The cropping guard: at every window size, from the smallest the window
+/// allows to a wide one, nothing on any screen reaches past the right edge
+/// of the window. (Past the bottom is fine: the page scrolls.)
+#[gpui_kit::test]
+fn nothing_runs_out_of_the_window(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    // Long names are what used to be cut off.
+    let long = "customer_reporting_warehouse__production-replica-eu-west__20260101-000000";
+    let context = sandbox(&root);
+    let dump = root.join("dumps").join(long);
+    fs::create_dir_all(&dump).unwrap();
+    fs::write(dump.join("metadata"), "x").unwrap();
+    let (shell, mut cx) = open(cx, context);
+    fill_every_screen(&shell, &mut cx);
+
+    for width in [520., 640., 759., 760., 1040., 1800.] {
+        cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(420.)));
+        for screen in Screen::ALL {
+            cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(screen, cx)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                assert_inside(window, width, screen.label());
+            });
+        }
+    }
+}
+
+/// Every control drawn in the last frame is between the left and right edge
+/// of a window `width` wide.
+fn assert_inside(window: &gpui_kit::Window, width: f32, what: &str) {
+    let elements = window.elements();
+    assert!(elements.len() > 1, "{what}: the screen was observed");
+    for element in elements {
+        let bounds = element.bounds();
+        assert!(
+            bounds.left() >= gpui_kit::px(0.) && bounds.right() <= gpui_kit::px(width),
+            "{what} at {width} wide: {:?} ({:?}) spans {:?}..{:?}",
+            element.label(),
+            element.path(),
+            bounds.left(),
+            bounds.right(),
+        );
+    }
+}
+
+/// The states that replace or cover a form also fit the smallest window:
+/// a finished run with its report, the install instructions, and the
+/// confirmation dialog of a load.
+#[gpui_kit::test]
+fn report_install_and_dialog_fit_the_smallest_window(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    let (dump, load, tools) = shell.read_with(&cx, |shell, _| {
+        (shell.dump.clone(), shell.load.clone(), shell.tools.clone())
+    });
+    let width = 520.;
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(420.)));
+
+    // A real run: the sandbox's mydumper fails at once, so the report shows.
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.pick_profile("example".into(), window, cx);
+            view.database
+                .update(cx, |input, cx| input.set_value("example_db", window, cx));
+            view.prepare(false, cx);
+        });
+    });
+    cx.run_until_parked();
+    let run = dump
+        .read_with(&cx, |view, _| view.run.clone())
+        .expect("the run view is shown");
+    assert!(run.read_with(&cx, |view, _| view.report.is_some()));
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| shell.show(Screen::Dump, cx));
+        window.render_frame(cx);
+        assert!(window.try_find_by_label("Back to the form").is_some());
+        assert_inside(window, width, "run report");
+    });
+
+    // The sandbox has no mysql, so its install instructions can be shown.
+    cx.update(|_, cx| {
+        shell.update(cx, |shell, cx| shell.show(Screen::Tools, cx));
+        tools.update(cx, |view, cx| {
+            view.show_install(slipdock_core::tools::Tool::Mysql, cx)
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_inside(window, width, "install instructions");
+    });
+
+    cx.update(|_, cx| {
+        shell.update(cx, |shell, cx| shell.show(Screen::Load, cx));
+        load.update(cx, |view, cx| view.pick_profile("example".into(), cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        load.update(cx, |view, cx| {
+            view.pick_dump(0, window, cx);
+            view.request_load(window, cx);
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert!(window.has_active_dialog(cx));
+        window.render_frame(cx);
+        assert!(window.try_find_by_label("Start load").is_some());
+        assert_inside(window, width, "load confirmation");
+    });
+}
+
+/// On a wide window the page keeps a readable width and sits in the middle
+/// of the space beside the navigation.
+#[gpui_kit::test]
+fn a_wide_window_centres_the_page(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    fill_every_screen(&shell, &mut cx);
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Dump, cx)));
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(1800.), gpui_kit::px(700.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let button = window.find_by_label("Run dump").bounds();
+        let input = window.find_by_label("List tables").bounds();
+        // Navigation 210, then (1590 - 980) / 2 of free space on each side.
+        assert!(button.left() > gpui_kit::px(500.), "{:?}", button.left());
+        assert!(input.right() < gpui_kit::px(1500.), "{:?}", input.right());
+    });
+}
+
+/// A page longer than the window scrolls, in both layouts.
+#[gpui_kit::test]
+fn a_long_page_scrolls(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    fill_every_screen(&shell, &mut cx);
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Dump, cx)));
+
+    for width in [520., 1040.] {
+        cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(420.)));
+        cx.run_until_parked();
+        let top = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                window.find_by_label("Run dump").bounds().top()
+            })
+        };
+        let before = top(&mut cx);
+        assert!(
+            before > gpui_kit::px(420.),
+            "the button starts below the window"
+        );
+        cx.update(|window, cx| {
+            window.scroll(
+                "content",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                    gpui_kit::px(0.),
+                    gpui_kit::px(-200.),
+                )),
+                cx,
+            )
+        });
+        assert_eq!(top(&mut cx), before - gpui_kit::px(200.), "at {width} wide");
+    }
+}
