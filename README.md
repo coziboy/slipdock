@@ -18,6 +18,7 @@ Both are thin layers over one library, `slipdock-core`, so they behave the same.
 | Tool | Needed for | Version |
 | --- | --- | --- |
 | mydumper, myloader | dumping and loading | 0.20.1 or newer (tested with 1.0.19) |
+| zstd | compressing dumps; mydumper and myloader start it | any |
 | mysql or mariadb client | optional: lists databases and tables to pick from | any |
 
 Slipdock never downloads these. It finds what is installed and otherwise shows
@@ -100,7 +101,7 @@ slipdock load <profile> <dump-dir> [target-db] [--log-level 0-3] [--confirm NAME
 slipdock dumps [profile]
 slipdock tools
 slipdock tools install [tool]
-slipdock tools set <tool> <path> | unset <tool>
+slipdock tools set <tool> <path> | unset <tool>    # tool: mydumper, myloader, mysql, zstd
 slipdock password set|clear <profile>
 slipdock completions zsh|bash|fish
 slipdock app
@@ -188,7 +189,45 @@ that way does not see variables set only in your shell
 (`SLIPDOCK_CONFIG_DIR`, `XDG_CONFIG_HOME`), and its `PATH` is the one in the
 bundle's `Info.plist`.
 
-## Code layout
+## Development
+
+### Set up
+
+You need [rustup](https://rustup.rs) and nothing else. `rust-toolchain.toml`
+pins the compiler (with rustfmt and clippy), and rustup fetches it the first
+time you run `cargo` in this folder. Your default toolchain is not changed.
+
+```sh
+git clone <repository url> && cd Slipdock
+cargo test
+```
+
+You do not need mydumper, a database or a keychain to build or to run the
+tests. You need them only to try a real dump or load.
+
+### Run from source
+
+```sh
+cargo run -p slipdock-cli -- tools       # arguments for slipdock go after `--`
+cargo run -p slipdock-app                # opens the window
+```
+
+`cargo run -p slipdock-cli -- app` builds only `slipdock`. It starts the
+`slipdock-app` that is beside it in `target/debug`, so run `cargo build` first,
+or it reports that the app is not installed (or starts an old build).
+
+A debug build reads the same config folder as an installed Slipdock, which
+means your real profiles. To work on scratch data, point it somewhere else:
+
+```sh
+export SLIPDOCK_CONFIG_DIR="$PWD/target/dev-config"   # target/ is not in git
+cargo run -p slipdock-cli -- init staging
+cargo run -p slipdock-app                             # sees the same folder
+```
+
+`--config-dir DIR` does the same for one command line run.
+
+### Code layout
 
 ```text
 crates/slipdock-core   the library: no terminal, no window, no async runtime
@@ -203,7 +242,7 @@ Core modules, each small and with its own tests:
 | `platform` | the only place that checks the operating system |
 | `profile` | reads and writes profile files line by line |
 | `settings` | `settings.toml` |
-| `tools` | finds and probes mydumper, myloader, mysql; install plans |
+| `tools` | finds and probes mydumper, myloader, mysql, zstd; install plans |
 | `command` | builds the exact argument lists; the preview text |
 | `dumps` | reads dump folders: size, tables, complete or partial |
 | `run` | runs a tool on a thread, sends progress over a channel, cancel |
@@ -216,15 +255,76 @@ Core modules, each small and with its own tests:
 If you are reading the app to learn GPUI, start with the table at the top of
 `crates/slipdock-app/src/main.rs`.
 
-## Tests
+### Where a change goes
+
+- **A rule** (what a profile means, which arguments a tool gets, when a dump
+  counts as complete) goes in `slipdock-core`, so both front ends get it. The
+  core never prints, never opens a window and is not async: long work runs on
+  a thread and reports over a `std::sync::mpsc` channel.
+- **Text for the user** is built in `report` as data. The command line tool
+  and the app each draw it, so do not format a report in a front end.
+- **An operating system check** goes in `platform` and nowhere else.
+- **A new command or flag** goes in `crates/slipdock-cli/src/cli.rs` (the
+  clap definitions) and `commands.rs` (what it does). Also add it to
+  [Commands](#commands) above.
+- **A new screen or control** goes in the `*_view.rs` file of that screen;
+  parts used by several screens are in `widgets.rs`.
+
+### Tests
 
 ```sh
-cargo test
-cargo clippy --all-targets -- -D warnings
+cargo test                       # everything
+cargo test -p slipdock-core      # one crate
+cargo test -p slipdock-core profile::    # one module
+cargo test -p slipdock-app every_screen_draws    # one test by name
 ```
 
 No test talks to a database, installs anything, or touches the real keychain.
-Tools are replaced by small shell scripts in temp folders.
+Tools are replaced by small shell scripts in temp folders, and the keychain by
+`secrets::MemoryStore`.
+
+| Crate | Where the tests are | How they work |
+| --- | --- | --- |
+| `slipdock-core` | a `tests` module at the end of each file | call the functions directly, with fake tools and fixture dump folders |
+| `slipdock-cli` | `crates/slipdock-cli/tests/cli.rs` | run the real `slipdock` binary (assert_cmd) in a `Sandbox`: temp config folder, one profile, fake tools |
+| `slipdock-app` | `crates/slipdock-app/src/tests.rs` | open the real window in GPUI's headless test platform; no screen needed |
+
+To add one:
+
+- **Core or command line:** write a fake tool as a shell script body with the
+  helper the tests already use (`fake_tool` in `job.rs` and `tests/cli.rs`),
+  then assert on the report or the output.
+- **App:** mark the test `#[gpui_kit::test]`, take
+  `cx: &mut TestAppContext`, and start with `open(cx, sandbox(&root))`. Drive
+  a screen through the methods its buttons call. When you add a control, the
+  layout tests (`nothing_runs_out_of_the_window` and the ones after it) check
+  that it stays inside the smallest window.
+
+### Before you commit
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+There is no CI, so these three are the whole check. All of them must pass.
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org)
+with the area as scope: `feat(app): ...`, `fix(cli): ...`, `test(core): ...`.
+
+### Dependencies
+
+Every dependency is declared once, in `[workspace.dependencies]` of the root
+`Cargo.toml`, with an exact version (`"=1.2.3"`). A crate then takes it with
+`name.workspace = true`. `Cargo.lock` is committed. Together these make a
+build next year use the same code as a build today.
+
+To update one, change the pinned version, run `cargo update -p <name>`, and
+run the checks above. For `gpui-kit`, also look at the `taffy` and
+`unicode-properties` lines in `crates/slipdock-app/Cargo.toml`: they must
+match what the new `gpui-kit` pins, and the comment there says why. A newer
+`gpui-kit` may also need a newer compiler in `rust-toolchain.toml`.
 
 ## License
 
