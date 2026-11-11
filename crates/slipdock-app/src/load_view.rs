@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::*;
+use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -379,7 +380,32 @@ impl LoadView {
                             "Tables in the dump are dropped and recreated in the target database.",
                             cx,
                         ))
-                        .child(format!("Click the field and type {target} to continue:"))
+                        .child(
+                            // The name to type stands out from the sentence
+                            // around it, and can be copied.
+                            widgets::wrap_row()
+                                .items_center()
+                                .gap_x_1p5()
+                                .child("To continue, type")
+                                .child(
+                                    div()
+                                        .px_1p5()
+                                        .min_w_0()
+                                        .rounded_sm()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .bg(cx.theme().muted)
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(target.clone()),
+                                )
+                                .child(
+                                    Clipboard::new("copy-target")
+                                        .value(target.clone())
+                                        .tooltip("Copy the name"),
+                                )
+                                .child("in the field:"),
+                        )
                         .child(Input::new(&input)),
                 )
                 .footer(
