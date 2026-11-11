@@ -5,6 +5,7 @@
 //! is asynchronous: long work runs on a plain thread and reports back over a
 //! `std::sync::mpsc` channel.
 
+pub mod command;
 pub mod error;
 pub mod exec;
 pub mod platform;
