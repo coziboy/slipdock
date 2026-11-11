@@ -94,17 +94,13 @@ pub struct DumpLog {
     pub path: PathBuf,
     /// What the log is of: `Dump`, or `Load into staging, 3 Jan 2026, 00:00`.
     pub title: String,
-    /// The end of the log, at most [`LOG_LINES`] lines.
+    /// The end of the log, at most [`crate::run::TAIL_BYTES`] of it.
     pub text: String,
     /// Whether the log has earlier lines that are not in `text`.
     pub cut: bool,
     /// The size of the whole log file, in bytes.
     pub size: u64,
 }
-
-/// The lines of a log that are read for showing; a long log is cut at its
-/// start, because what went wrong is at its end.
-pub const LOG_LINES: usize = 300;
 
 /// The logs beside a dump: the one of the dump itself first, then one per
 /// load, newest first. A dump without logs gives an empty list.
@@ -148,19 +144,17 @@ fn load_stamp(file: &str) -> &str {
 fn read_log(path: PathBuf, title: String) -> DumpLog {
     let size = fs::metadata(&path).map_or(0, |meta| meta.len());
     // Only the end of the file is read: a log can be many megabytes, and
-    // its last lines are what is shown.
-    let (text, cut_by_bytes) = match crate::run::read_end(&path, crate::run::TAIL_BYTES) {
+    // what went wrong is at its end.
+    let (text, cut) = match crate::run::read_end(&path, crate::run::TAIL_BYTES) {
         // A log may hold bytes that are not UTF-8 (a table name, a value).
         Ok((bytes, cut)) => (String::from_utf8_lossy(&bytes).into_owned(), cut),
         Err(error) => (format!("cannot read the log: {error}"), false),
     };
-    let lines: Vec<&str> = text.lines().collect();
-    let first = lines.len().saturating_sub(LOG_LINES);
     DumpLog {
         path,
         title,
-        text: lines[first..].join("\n"),
-        cut: cut_by_bytes || first > 0,
+        text: text.trim_end().to_string(),
+        cut,
         size,
     }
 }
@@ -328,8 +322,10 @@ mod tests {
         let dir = fixture(root.path(), "example_db__example__20260102-030405", true);
         assert!(logs(&dir).is_empty());
 
-        let long: String = (0..LOG_LINES + 5)
-            .map(|line| format!("line {line}\n"))
+        // Longer than what is read of a log: 16 bytes a line.
+        let lines = crate::run::TAIL_BYTES / 16 + 5;
+        let long: String = (0..lines)
+            .map(|line| format!("line {line:010}\n"))
             .collect();
         for (file, text) in [
             ("example_db__example__20260102-030405.log", long.as_str()),
@@ -360,12 +356,13 @@ mod tests {
         assert!(found[0].cut);
         assert_eq!(found[0].size, long.len() as u64);
         assert!(!found[1].cut);
+        // The read starts at the end of line 5, which goes with the cut.
         assert!(
-            found[0].text.starts_with("line 5\n"),
+            found[0].text.starts_with("line 0000000006\n"),
             "{}",
             &found[0].text[..20]
         );
-        assert!(found[0].text.ends_with(&format!("line {}", LOG_LINES + 4)));
+        assert!(found[0].text.ends_with(&format!("line {:010}", lines - 1)));
         assert_eq!(found[1].text, "new");
     }
 

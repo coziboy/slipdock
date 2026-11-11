@@ -21,10 +21,8 @@ use std::path::Path;
 
 use gpui_kit::component::button::*;
 use gpui_kit::component::clipboard::Clipboard;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -453,96 +451,6 @@ pub fn mono(text: &str, cx: &App) -> Div {
         block = block.child(div().child(line.to_string()));
     }
     block
-}
-
-/// The text of a log, made ready for [`log_text`] once.
-///
-/// A screen is drawn many times a second while something on it moves (a
-/// spinner, a scroll). Building the text for the text view on each of those
-/// would copy a long log every time, so it is built here, when the log is
-/// read, and drawing only hands out references to it.
-#[derive(Clone, Default)]
-pub struct Log {
-    /// As in the file: what the copy button copies.
-    raw: SharedString,
-    /// As one fenced code block, for the text view.
-    fenced: SharedString,
-}
-
-impl Log {
-    pub fn new(text: &str) -> Self {
-        // More tildes than a log line starts with, so no line ends the block.
-        const FENCE: &str = "~~~~~~~~~~~~";
-        Log {
-            raw: text.to_string().into(),
-            fenced: format!("{FENCE}\n{text}\n{FENCE}").into(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.raw.trim().is_empty()
-    }
-}
-
-/// A log: text in a fixed-width font that can be selected with the mouse
-/// and copied, with a button that copies all of it.
-///
-/// GPUI's plain text cannot be selected. The component library's text view
-/// can, and it draws Markdown, so the log is handed to it as one fenced code
-/// block: inside a fence nothing is read as Markdown (a log line may well
-/// start with `**`).
-///
-/// With `scroll`, the text is in a box of a fixed greatest height that
-/// scrolls on its own; the handle lets the caller keep the newest line in
-/// view. Without, the text is as high as it is (the caller scrolls).
-pub fn log_text(
-    id: impl Into<ElementId>,
-    log: &Log,
-    scroll: Option<&ScrollHandle>,
-    cx: &App,
-) -> Div {
-    let id = id.into();
-    v_flex()
-        .gap_1()
-        .min_w_0()
-        .child(
-            h_flex().justify_end().child(
-                Clipboard::new(ElementId::NamedChild(
-                    std::sync::Arc::new(id.clone()),
-                    "copy".into(),
-                ))
-                .value(log.raw.clone())
-                .tooltip("Copy the log"),
-            ),
-        )
-        .child(
-            // The box that scrolls, and over its right edge the scroll bar
-            // of the same handle.
-            div()
-                .relative()
-                .min_w_0()
-                .child(
-                    div()
-                        .id(ElementId::NamedChild(
-                            std::sync::Arc::new(id.clone()),
-                            "scroll".into(),
-                        ))
-                        .min_w_0()
-                        .when_some(scroll, |this, handle| {
-                            this.max_h(px(320.))
-                                .overflow_y_scroll()
-                                .track_scroll(handle)
-                                // Keeps the scroll from the page behind the log.
-                                .occlude()
-                                // Room for the scroll bar beside the text.
-                                .pr_4()
-                        })
-                        .text_xs()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .child(TextView::markdown(id, log.fenced.clone()).selectable(true)),
-                )
-                .when_some(scroll, |this, handle| this.vertical_scrollbar(handle)),
-        )
 }
 
 /// What "Show command" shows: the summary, the command with a button that

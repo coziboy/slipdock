@@ -19,6 +19,7 @@ use gpui_kit::*;
 use slipdock_core::dumps::{self, DumpInfo};
 use slipdock_core::profile;
 
+use crate::log_view::LogView;
 use crate::state::core;
 use crate::widgets::{self, Tone};
 
@@ -33,6 +34,8 @@ pub struct DumpsView {
     pub(crate) error: Option<String>,
     /// The dump whose logs are being read for showing.
     reading_logs: Option<PathBuf>,
+    /// What the logs dialog shows, while it is open.
+    pub(crate) logs_shown: Option<WeakEntity<DumpLogs>>,
     /// The folders are being read again ("Refresh").
     reading: bool,
     /// Narrows the lists to the dumps whose name or date contains this text.
@@ -67,6 +70,7 @@ impl DumpsView {
             deleting: Vec::new(),
             error: None,
             reading_logs: None,
+            logs_shown: None,
             reading: false,
             filter,
             collapsed: HashSet::new(),
@@ -295,88 +299,48 @@ impl DumpsView {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.reading_logs = None;
                 cx.notify();
-                Self::open_logs(name, logs, window, cx);
+                this.logs_shown = Some(Self::open_logs(name, logs, window, cx).downgrade());
             });
         })
         .detach();
     }
 
-    fn open_logs(name: String, logs: Vec<dumps::DumpLog>, window: &mut Window, cx: &mut App) {
-        // The builder may run many times, so the logs are shared, not
-        // copied, and their text is made ready for drawing once, here.
-        let texts: std::rc::Rc<Vec<widgets::Log>> = std::rc::Rc::new(
-            logs.iter()
-                .map(|log| widgets::Log::new(&log.text))
-                .collect(),
-        );
-        let logs = std::rc::Rc::new(logs);
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let mut body = v_flex().gap_4().min_w_0();
-            if logs.is_empty() {
-                body = body.child(widgets::hint(
-                    "No log beside this dump. A dump or load started by Slipdock writes one.",
-                    cx,
-                ));
-            }
-            for (index, log) in logs.iter().enumerate() {
-                let file = log.path.clone();
-                body = body.child(
-                    v_flex()
-                        .gap_2()
-                        .min_w_0()
-                        .child(
-                            h_flex()
-                                .flex_wrap()
-                                .items_center()
-                                .justify_between()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(log.title.clone()),
-                                )
-                                .child(
-                                    Button::new(("open-log", index))
-                                        .small()
-                                        .outline()
-                                        .icon(IconName::ExternalLink)
-                                        .label("Open file")
-                                        .on_click(move |_, _, cx| cx.open_with_system(&file)),
-                                ),
-                        )
-                        .when(log.cut, |this| {
-                            this.child(widgets::hint(
-                                format!(
-                                    "The end of the log. All of it ({}) is in the file.",
-                                    dumps::human_size(log.size)
-                                ),
-                                cx,
-                            ))
-                        })
-                        .child(if log.text.trim().is_empty() {
-                            widgets::hint("The log is empty.", cx)
-                        } else {
-                            widgets::log_text(("log-text", index), &texts[index], None, cx)
-                        }),
-                );
-            }
+    fn open_logs(
+        name: String,
+        logs: Vec<dumps::DumpLog>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<DumpLogs> {
+        // The builder below may run many times, so what the dialog shows
+        // is a view that is made once, here.
+        let logs = cx.new(|cx| DumpLogs::new(logs, cx));
+        let body = logs.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let body = body.clone();
             dialog
                 .title(format!("Logs of {name}"))
                 .w(px(760.))
                 .child(
-                    // The logs scroll inside the dialog, and keep the scroll
-                    // from the page behind it.
-                    // `overflow_y_scrollbar` is `overflow_y_scroll` with a
-                    // scroll bar drawn over the right edge; the padding
-                    // keeps the text out from under it.
-                    div()
-                        .max_h(px(420.))
-                        .occlude()
-                        .pr_4()
-                        .child(body)
-                        .overflow_y_scrollbar()
-                        .id("dump-logs"),
+                    // A log scrolls in its own box, so this box scrolls only
+                    // when the dialog is too low for all of it (many
+                    // choices, a low window). `occlude` keeps the scroll
+                    // from the page behind it. `occlude` is on a
+                    // box of its own, around the one that scrolls:
+                    // `overflow_y_scrollbar` moves what is set on its
+                    // element to the content that scrolls, and there
+                    // `occlude` would cover the scroll area itself, which
+                    // then never gets the wheel.
+                    div().occlude().child(
+                        // `overflow_y_scrollbar` is `overflow_y_scroll` with
+                        // a scroll bar drawn over the right edge; the
+                        // padding keeps the text out from under it.
+                        div()
+                            .max_h(px(420.))
+                            .pr_4()
+                            .child(body)
+                            .overflow_y_scrollbar()
+                            .id("dump-logs"),
+                    ),
                 )
                 .footer(
                     h_flex().justify_end().child(
@@ -387,6 +351,7 @@ impl DumpsView {
                     ),
                 )
         });
+        logs
     }
 
     /// Deletes dumps in the background, then reads the folders again. One
@@ -739,5 +704,111 @@ impl Render for DumpsView {
             page = page.child(card);
         }
         page
+    }
+}
+
+/// The logs beside a dump, as the logs dialog shows them: one at a time,
+/// with a row of choices when there are several.
+///
+/// One at a time, because a log box takes the wheel while the pointer is
+/// on it. Several boxes under each other, in a dialog that scrolls too,
+/// would leave little room to scroll the dialog from.
+pub(crate) struct DumpLogs {
+    logs: Vec<dumps::DumpLog>,
+    /// The log box of each log, made once: it keeps where it is scrolled to.
+    pub(crate) views: Vec<Entity<LogView>>,
+    /// Which log is on show.
+    pub(crate) shown: usize,
+}
+
+/// The rows of a log box in the dialog: few enough that the dialog shows
+/// all of it without scrolling.
+const DIALOG_LOG_ROWS: usize = 12;
+
+impl DumpLogs {
+    fn new(logs: Vec<dumps::DumpLog>, cx: &mut Context<Self>) -> Self {
+        let views = logs
+            .iter()
+            .map(|log| {
+                cx.new(|cx| {
+                    let mut view = LogView::new(false).rows(DIALOG_LOG_ROWS);
+                    view.push(&log.text, cx);
+                    view
+                })
+            })
+            .collect();
+        DumpLogs {
+            logs,
+            views,
+            shown: 0,
+        }
+    }
+}
+
+impl Render for DumpLogs {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(log) = self.logs.get(self.shown) else {
+            return widgets::hint(
+                "No log beside this dump. A dump or load started by Slipdock writes one.",
+                cx,
+            );
+        };
+        let file = log.path.clone();
+        v_flex()
+            .gap_2()
+            .min_w_0()
+            .when(self.logs.len() > 1, |this| {
+                let mut choices = widgets::wrap_row().pb_2();
+                for (index, log) in self.logs.iter().enumerate() {
+                    choices = choices.child(
+                        widgets::choice(
+                            ("log-choice", index),
+                            log.title.clone(),
+                            index == self.shown,
+                        )
+                        .small()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.shown = index;
+                            cx.notify();
+                        })),
+                    );
+                }
+                this.child(choices)
+            })
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(log.title.clone()),
+                    )
+                    .child(
+                        Button::new("open-log")
+                            .small()
+                            .outline()
+                            .icon(IconName::ExternalLink)
+                            .label("Open file")
+                            .on_click(move |_, _, cx| cx.open_with_system(&file)),
+                    ),
+            )
+            .when(log.cut, |this| {
+                this.child(widgets::hint(
+                    format!(
+                        "The end of the log. All of it ({}) is in the file.",
+                        dumps::human_size(log.size)
+                    ),
+                    cx,
+                ))
+            })
+            .child(if log.text.trim().is_empty() {
+                widgets::hint("The log is empty.", cx)
+            } else {
+                div().min_w_0().child(self.views[self.shown].clone())
+            })
     }
 }

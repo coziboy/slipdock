@@ -77,10 +77,14 @@ case "$5" in "SHOW DATABASES") echo example_db ;; esac
 "#;
     fs::write(&mysql, script).unwrap();
     fs::set_permissions(&mysql, fs::Permissions::from_mode(0o755)).unwrap();
+    // A myloader that writes one line to the file after `--logfile`.
     fake_tool(
         &root.join("bin"),
         "myloader",
-        &format!("touch {}/loaded", root.display()),
+        &format!(
+            "before=\"\"\nfor arg in \"$@\"; do\n  if [ \"$before\" = --logfile ]; then echo \"2026-01-01 00:00:00 [INFO] - a line of the fake myloader\" >> \"$arg\"; fi\n  before=\"$arg\"\ndone\ntouch {}/loaded",
+            root.display()
+        ),
     );
     Context {
         config_dir: root.join("config"),
@@ -1237,4 +1241,270 @@ fn the_arguments_of_a_tool_are_saved_and_used(cx: &mut TestAppContext) {
     let (ok, _) = save(Tool::Mydumper, "", &mut cx);
     assert!(ok);
     assert_eq!(saved(), (String::new(), "--threads 6".to_string()));
+}
+
+/// Sends a wheel event to what is at `position`. A negative `delta`
+/// scrolls down, as in GPUI.
+fn wheel(position: gpui_kit::Point<gpui_kit::Pixels>, delta: f32, cx: &mut VisualTestContext) {
+    cx.simulate_mouse_move(position, None, gpui_kit::Modifiers::default());
+    cx.simulate_event(gpui_kit::ScrollEvent {
+        position,
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+            gpui_kit::px(0.),
+            gpui_kit::px(delta),
+        )),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+}
+
+/// Opens the logs dialog of the one dump of the sandbox, which has a long
+/// dump log and `loads` load logs beside it.
+fn open_logs_dialog(
+    loads: usize,
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<crate::dumps_view::DumpLogs>,
+    VisualTestContext,
+) {
+    let (temp, root) = temp_root();
+    let context = sandbox(&root);
+    let long: String = (0..2000).map(|line| format!("line {line}\n")).collect();
+    let dump = "dumps/example_db__example__20260101-000000";
+    fs::write(root.join(format!("{dump}.log")), &long).unwrap();
+    for load in 0..loads {
+        fs::write(
+            root.join(format!(
+                "{dump}__load_example_202601{:02}-000000.log",
+                load + 2
+            )),
+            format!("load {load}\n"),
+        )
+        .unwrap();
+    }
+    let (shell, mut cx) = open(cx, context);
+    let dumps = shell.read_with(&cx, |shell, _| shell.dumps.clone());
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Dumps, cx)));
+    cx.run_until_parked();
+    let listed = dumps.read_with(&cx, |view, _| view.roots.clone().unwrap()[0].1[0].clone());
+    cx.update(|window, cx| dumps.update(cx, |view, cx| view.show_logs(&listed, window, cx)));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.render_frame(cx));
+    let logs = dumps
+        .read_with(&cx, |view, _| view.logs_shown.clone())
+        .and_then(|logs| logs.upgrade())
+        .expect("the dialog is open");
+    (temp, logs, cx)
+}
+
+/// The logs dialog shows one log at a time, all of its box at once, and
+/// the box scrolls through all that was read of the log.
+#[gpui_kit::test]
+fn the_logs_dialog_shows_a_long_log_in_a_box_that_scrolls(cx: &mut TestAppContext) {
+    let (_temp, logs, mut cx) = open_logs_dialog(1, cx);
+    let view = logs.read_with(&cx, |logs, _| logs.views[0].clone());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.render_frame(cx));
+
+    // The box is above the Close button: nothing of it is cut off.
+    let bounds = view.read_with(&cx, |view, cx| view.bounds(cx));
+    // (The dialog has two of them: the cross at its top is the other.)
+    let close = cx.update(|window, _| {
+        let tops = window.find_all_by_label("Close");
+        tops.iter()
+            .map(|close| close.bounds().top())
+            .fold(gpui_kit::px(0.), |a, b| a.max(b))
+    });
+    assert!(bounds.bottom() < close, "{bounds:?} {close:?}");
+
+    // All that was read is there, not only the last lines, and the box
+    // starts at the end.
+    let text = view.read_with(&cx, |view, cx| view.text(cx));
+    assert!(text.starts_with("line 0\n") && text.ends_with("line 1999"));
+    let (end, at_end) = view.read_with(&cx, |view, cx| view.scroll(cx));
+    assert!(at_end);
+
+    // The wheel on the text scrolls the box, and a button goes back.
+    wheel(bounds.center(), 300., &mut cx);
+    let (offset, at_end) = view.read_with(&cx, |view, cx| view.scroll(cx));
+    assert_eq!(offset, end + gpui_kit::px(300.));
+    assert!(!at_end);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find_by_label("Go to end").visible());
+    });
+
+    // The other log is one click away.
+    cx.update(|window, cx| {
+        let choice = window.find_by_label("Load into example, 2 Jan 2026, 00:00");
+        let position = choice.bounds().center();
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                position,
+                button: gpui_kit::MouseButton::Left,
+                click_count: 1,
+                ..Default::default()
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                position,
+                button: gpui_kit::MouseButton::Left,
+                click_count: 1,
+                ..Default::default()
+            }),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(logs.read_with(&cx, |logs, _| logs.shown), 1);
+    cx.update(|window, cx| window.render_frame(cx));
+    let other = logs.read_with(&cx, |logs, _| logs.views[1].clone());
+    assert_eq!(other.read_with(&cx, |view, cx| view.text(cx)), "load 0");
+}
+
+/// With more in the logs dialog than it has room for, the dialog scrolls
+/// with the wheel.
+#[gpui_kit::test]
+fn a_high_logs_dialog_scrolls(cx: &mut TestAppContext) {
+    let (_temp, _logs, mut cx) = open_logs_dialog(28, cx);
+    let first = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.find_by_label("Dump").bounds()
+        })
+    };
+    let before = first(&mut cx);
+    wheel(before.center(), -60., &mut cx);
+    assert_eq!(first(&mut cx).top(), before.top() - gpui_kit::px(60.));
+}
+
+/// The log box of a run holds every line that was read, keeps its place
+/// while lines are added when it is scrolled back, and follows the newest
+/// line again after "Follow".
+#[gpui_kit::test]
+fn the_log_of_a_run_stays_where_it_is_read(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    let load: Entity<LoadView> = shell.read_with(&cx, |shell, _| shell.load.clone());
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Load, cx)));
+    cx.update(|_, cx| load.update(cx, |view, cx| view.pick_profile("example".into(), cx)));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        load.update(cx, |view, cx| {
+            view.pick_dump(0, window, cx);
+            view.request_load(window, cx);
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        load.update(cx, |view, cx| {
+            view.confirm
+                .update(cx, |input, cx| input.set_value("example_db", window, cx));
+            view.start_confirmed(cx);
+        });
+        // The button that confirms closes the dialog; here nothing was
+        // clicked, and an open dialog would take the wheel.
+        window.close_dialog(cx);
+    });
+    cx.run_until_parked();
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    let run = load
+        .read_with(&cx, |view, _| view.run.clone())
+        .expect("the run view is shown");
+    let log = run.read_with(&cx, |view, _| view.log_view.clone());
+    let lines = |range: std::ops::Range<usize>| -> String {
+        range.map(|line| format!("line {line}\n")).collect()
+    };
+    let draw = |cx: &mut VisualTestContext| {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.render_frame(cx));
+        cx.run_until_parked();
+    };
+
+    // What the tool wrote to its log is in the box.
+    assert!(
+        log.read_with(&cx, |view, cx| view.text(cx))
+            .contains("a line of the fake myloader")
+    );
+
+    // Far more lines than the box shows: all of them are kept.
+    cx.update(|_, cx| {
+        run.update(cx, |view, cx| {
+            view.log_open = true;
+            cx.notify();
+        });
+        log.update(cx, |view, cx| view.push(&lines(0..1000), cx));
+    });
+    draw(&mut cx);
+    let text = log.read_with(&cx, |view, cx| view.text(cx));
+    assert!(text.contains("\nline 0\n") && text.ends_with("line 999"));
+    let (_, at_end) = log.read_with(&cx, |view, cx| view.scroll(cx));
+    assert!(at_end, "the box starts at the newest line");
+
+    // Followed, the box moves with the lines that are added.
+    cx.update(|_, cx| log.update(cx, |view, cx| view.push(&lines(1000..1010), cx)));
+    draw(&mut cx);
+    let (_, at_end) = log.read_with(&cx, |view, cx| view.scroll(cx));
+    assert!(at_end, "the box follows the newest line");
+
+    // The page is scrolled to the box, then the box is scrolled back.
+    let window_height = cx.update(|window, _| window.viewport_size().height);
+    let bounds = log.read_with(&cx, |view, cx| view.bounds(cx));
+    if bounds.bottom() > window_height {
+        let by = bounds.bottom() - window_height + gpui_kit::px(20.);
+        cx.update(|window, cx| {
+            window.scroll(
+                "content",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), -by)),
+                cx,
+            )
+        });
+        draw(&mut cx);
+    }
+    // The cursor is at the end of the text, as after a click there. Adding
+    // text moves it, which must not take the box along.
+    cx.update(|_, cx| log.update(cx, |view, cx| view.cursor_to_end(cx)));
+    draw(&mut cx);
+    let bounds = log.read_with(&cx, |view, cx| view.bounds(cx));
+    wheel(bounds.center(), 300., &mut cx);
+    draw(&mut cx);
+    assert_eq!(
+        log.read_with(&cx, |view, cx| view.bounds(cx)),
+        bounds,
+        "the button that appears does not move the box"
+    );
+    let (scrolled_back, at_end) = log.read_with(&cx, |view, cx| view.scroll(cx));
+    assert!(!at_end);
+    assert!(!log.read_with(&cx, |view, _| view.follow));
+
+    // Lines that are added do not move it.
+    for (start, count) in [(1010, 10), (1020, 1), (1021, 9)] {
+        cx.update(|_, cx| log.update(cx, |view, cx| view.push(&lines(start..start + count), cx)));
+        draw(&mut cx);
+        let (offset, at_end) = log.read_with(&cx, |view, cx| view.scroll(cx));
+        assert_eq!(offset, scrolled_back);
+        assert!(!at_end);
+        assert!(!log.read_with(&cx, |view, _| view.follow));
+    }
+    assert!(
+        log.read_with(&cx, |view, cx| view.text(cx))
+            .ends_with("line 1029")
+    );
+
+    // The button goes back to the newest line, and the box follows again.
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let button = window.find_by_label("Go to end");
+        assert!(button.visible());
+    });
+    cx.update(|_, cx| log.update(cx, |view, cx| view.go_to_end(cx)));
+    draw(&mut cx);
+    cx.update(|_, cx| log.update(cx, |view, cx| view.push(&lines(1030..1040), cx)));
+    draw(&mut cx);
+    let (_, at_end) = log.read_with(&cx, |view, cx| view.scroll(cx));
+    assert!(at_end);
+    assert!(log.read_with(&cx, |view, _| view.follow));
 }

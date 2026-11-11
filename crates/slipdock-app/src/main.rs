@@ -13,12 +13,14 @@
 //! | entity, context, render, actions | `shell.rs` |
 //! | elements as values, layout that follows the window | `widgets.rs` |
 //! | background tasks          | `run_view.rs`, `tools_view.rs` |
+//! | drawing only what is on show | `log_view.rs` |
 //! | text inputs               | `profiles_view.rs` |
 //! | events, dialogs           | `load_view.rs`  |
 
 mod dump_view;
 mod dumps_view;
 mod load_view;
+mod log_view;
 mod profiles_view;
 mod run_view;
 mod shell;

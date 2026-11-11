@@ -176,8 +176,10 @@ slipdock app        # or start slipdock-app directly
 ```
 
 Screens: **Dump**, **Load**, **Dumps**, **Profiles**, **Tools** (Cmd-1 to
-Cmd-5). A run shows elapsed time, files, size, the end of the log, and a
+Cmd-5). A run shows elapsed time, files, size, the log as it grows, and a
 Cancel button; the report at the end is the same text the command line prints.
+The log box follows the newest line. Scrolled back, it stays where you read,
+and **Follow** returns to the end.
 
 Known limit: closing the app while a tool runs does not stop the tool. Use
 Cancel first.

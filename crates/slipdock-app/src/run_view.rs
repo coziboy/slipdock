@@ -21,25 +21,25 @@ use gpui_kit::*;
 use slipdock_core::dumps;
 use slipdock_core::job::Prepared;
 use slipdock_core::report::{self, Line, Report};
-use slipdock_core::run::{self, Cancel, Event, Progress};
+use slipdock_core::run::{Cancel, Event, LogReader, Progress};
 
+use crate::log_view::LogView;
 use crate::state::core;
 use crate::widgets;
 
-/// How many lines of the end of the log are kept for the log box. The box
-/// shows some of them and scrolls back through the rest; the file has all.
-/// The number is a bound on the work of drawing the box, which lays out
-/// every line it holds.
-const TAIL_LINES: usize = 300;
+/// The most of the log that is read at once. A run adds far less than
+/// this between two reads, so the log box gets every line.
+const READ_BYTES: u64 = 1024 * 1024;
 
 pub struct RunView {
     label: SharedString,
     summary: Vec<Line>,
     log: PathBuf,
     progress: Option<Progress>,
-    tail: widgets::Log,
-    /// Where the log box is scrolled to.
-    log_scroll: ScrollHandle,
+    /// Reads what the run added to the log file since the last read.
+    reader: LogReader,
+    /// The log box, with the lines read so far.
+    pub(crate) log_view: Entity<LogView>,
     /// The lines of the log are on show. They start hidden: the line with
     /// the spinner says how far the run is, and the log is for looking
     /// closer.
@@ -62,8 +62,8 @@ impl RunView {
             summary,
             log: prepared.log.clone(),
             progress: None,
-            tail: widgets::Log::default(),
-            log_scroll: ScrollHandle::new(),
+            reader: LogReader::new(&prepared.log, READ_BYTES),
+            log_view: cx.new(|_| LogView::new(true)),
             log_open: false,
             cancel: None,
             cancelling: false,
@@ -113,17 +113,11 @@ impl RunView {
         self.report.is_some()
     }
 
-    /// Takes the new end of the log. The box follows the newest line while
-    /// it is scrolled to the end; scrolled back to read, it stays where it
-    /// is.
-    fn set_tail(&mut self, tail: Vec<String>) {
-        // Offsets go down from zero as the box is scrolled.
-        let end = -self.log_scroll.max_offset().y;
-        let at_end = self.log_scroll.offset().y <= end + px(8.);
-        self.tail = widgets::Log::new(&tail.join("\n"));
-        if at_end {
-            self.log_scroll.scroll_to_bottom();
-        }
+    /// Hands new lines of the log to the log box. The box follows the
+    /// newest line while it is scrolled to the end; scrolled back to read,
+    /// it stays where it is.
+    fn add_to_log(&mut self, lines: String, cx: &mut Context<Self>) {
+        self.log_view.update(cx, |view, cx| view.push(&lines, cx));
     }
 
     fn on_event(&mut self, event: Event, cx: &mut Context<Self>) {
@@ -135,7 +129,8 @@ impl RunView {
                     .as_ref()
                     .is_none_or(|old| old.elapsed.as_secs() != progress.elapsed.as_secs());
                 if second_changed {
-                    self.set_tail(run::log_tail(&self.log, TAIL_LINES, true));
+                    let lines = self.reader.read_new();
+                    self.add_to_log(lines, cx);
                 }
                 self.progress = Some(progress);
             }
@@ -145,7 +140,9 @@ impl RunView {
                 // had no room for all of it.
                 let quoted_in_full =
                     outcome.exit_code() != 0 && outcome.output_lines <= outcome.output_head.len();
-                self.set_tail(run::log_tail(&self.log, TAIL_LINES, !quoted_in_full));
+                let lines = self.reader.finish(!quoted_in_full);
+                self.add_to_log(lines, cx);
+                self.log_view.update(cx, |view, cx| view.set_finished(cx));
                 // The same report the command line tool prints.
                 self.report = self
                     .prepared
@@ -216,7 +213,7 @@ impl Render for RunView {
                         ),
                 )
             })
-            .when(!self.tail.is_empty(), |this| {
+            .when(!self.log_view.read(cx).is_empty(), |this| {
                 let open = self.log_open;
                 this.child(
                     v_flex()
@@ -236,7 +233,7 @@ impl Render for RunView {
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.log_open = !this.log_open;
                                         // Opened, the box starts at the newest line.
-                                        this.log_scroll.scroll_to_bottom();
+                                        this.log_view.update(cx, |view, cx| view.go_to_end(cx));
                                         cx.notify();
                                     })),
                             ),
@@ -249,12 +246,7 @@ impl Render for RunView {
                                 ),
                                 cx,
                             ))
-                            .child(widgets::log_text(
-                                "run-log",
-                                &self.tail,
-                                Some(&self.log_scroll),
-                                cx,
-                            ))
+                            .child(self.log_view.clone())
                         }),
                 )
             })

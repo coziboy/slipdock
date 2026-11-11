@@ -286,26 +286,127 @@ pub fn read_end(path: &Path, limit: u64) -> std::io::Result<(Vec<u8>, bool)> {
     Ok((bytes, cut))
 }
 
-/// The last `count` lines of a log file, for a live view: without empty
-/// lines, and tidied with [`tidy_line`].
+/// Reads a log file as it grows, for a live view.
 ///
-/// `with_tool_output: false` leaves out what was added under
-/// [`TOOL_OUTPUT_MARKER`], for a view that shows that text elsewhere.
+/// Each call gives only what was added since the call before it, so a view
+/// that asks every second stays quick however long the log has become, and
+/// the lines it already shows stay where they are. Empty lines are left
+/// out and the rest is tidied with [`tidy_line`].
 ///
-/// Only the end of the file is read ([`TAIL_BYTES`]), so a view that asks
-/// every second stays quick however long the log has become.
-pub fn log_tail(log: &Path, count: usize, with_tool_output: bool) -> Vec<String> {
-    let (text, _) = read_end(log, TAIL_BYTES).unwrap_or_default();
-    let text = String::from_utf8_lossy(&text);
-    let mut lines: Vec<&str> = text.lines().collect();
-    if !with_tool_output
-        && let Some(marker) = lines.iter().rposition(|line| *line == TOOL_OUTPUT_MARKER)
-    {
-        lines.truncate(marker);
+/// ```text
+///   file:   [ seen before ......... | new whole lines | half a line ]
+///                                     ^ read_new()      ^ kept for the next call
+/// ```
+///
+/// What the tool printed, under [`TOOL_OUTPUT_MARKER`], is held back until
+/// [`LogReader::finish`], where the caller says whether it wants it.
+pub struct LogReader {
+    path: PathBuf,
+    /// The most that one call reads. A file with more unread bytes than
+    /// this is read from that far before its end.
+    limit: u64,
+    /// How far into the file the reader is.
+    offset: u64,
+    /// The start of a line whose end is not in the file yet.
+    partial: Vec<u8>,
+    /// The marker and the lines under it, tidied.
+    tool_output: String,
+    in_tool_output: bool,
+    skipped: bool,
+}
+
+impl LogReader {
+    pub fn new(path: impl Into<PathBuf>, limit: u64) -> Self {
+        LogReader {
+            path: path.into(),
+            limit,
+            offset: 0,
+            partial: Vec::new(),
+            tool_output: String::new(),
+            in_tool_output: false,
+            skipped: false,
+        }
     }
-    lines.retain(|line| !line.trim().is_empty());
-    let start = lines.len().saturating_sub(count);
-    lines[start..].iter().map(|line| tidy_line(line)).collect()
+
+    /// Whether a part of the file was left out because it was more than
+    /// the limit.
+    pub fn skipped(&self) -> bool {
+        self.skipped
+    }
+
+    /// The whole lines added to the file since the last call, each ended
+    /// by a line break. Empty when there are none, or the file cannot be
+    /// read.
+    pub fn read_new(&mut self) -> String {
+        let bytes = self.read_bytes().unwrap_or_default();
+        self.partial.extend_from_slice(&bytes);
+        let Some(last_break) = self.partial.iter().rposition(|byte| *byte == b'\n') else {
+            return String::new();
+        };
+        let rest = self.partial.split_off(last_break + 1);
+        let whole = std::mem::replace(&mut self.partial, rest);
+        self.take_lines(&whole)
+    }
+
+    /// The rest of the file when the run has ended: the new lines, a last
+    /// line without a line break, and with `with_tool_output` the marker
+    /// and what the tool printed under it.
+    pub fn finish(&mut self, with_tool_output: bool) -> String {
+        let mut text = self.read_new();
+        let last = std::mem::take(&mut self.partial);
+        text.push_str(&self.take_lines(&last));
+        let tool_output = std::mem::take(&mut self.tool_output);
+        if with_tool_output {
+            text.push_str(&tool_output);
+        }
+        text
+    }
+
+    /// The bytes of the file from where the reader is.
+    fn read_bytes(&mut self) -> std::io::Result<Vec<u8>> {
+        let mut file = File::open(&self.path)?;
+        let size = file.metadata()?.len();
+        if size < self.offset {
+            // The file was replaced by a shorter one: start again.
+            self.offset = 0;
+            self.partial.clear();
+        }
+        let jumped = size - self.offset > self.limit;
+        if jumped {
+            self.offset = size - self.limit;
+            self.partial.clear();
+            self.skipped = true;
+        }
+        file.seek(SeekFrom::Start(self.offset))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        self.offset += bytes.len() as u64;
+        if jumped {
+            // The read starts somewhere in a line: drop up to its end.
+            let first_line_end = bytes.iter().position(|byte| *byte == b'\n');
+            bytes.drain(..first_line_end.map_or(bytes.len(), |at| at + 1));
+        }
+        Ok(bytes)
+    }
+
+    /// Tidies whole lines. Lines from the marker on go to `tool_output`,
+    /// the others are returned.
+    fn take_lines(&mut self, bytes: &[u8]) -> String {
+        // A log may hold bytes that are not UTF-8 (a table name, a value).
+        let text = String::from_utf8_lossy(bytes);
+        let mut lines = String::new();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            self.in_tool_output |= line == TOOL_OUTPUT_MARKER;
+            let to = if self.in_tool_output {
+                &mut self.tool_output
+            } else {
+                &mut lines
+            };
+            to.push_str(&tidy_line(line));
+            to.push('\n');
+        }
+        lines
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -429,7 +530,6 @@ mod tests {
             ["Another", "Broken thing", "Couldn't get master position"]
         );
         assert!(log_problems(&temp.path().join("missing.log")).is_empty());
-        assert_eq!(log_tail(&log, 2, true).len(), 2);
     }
 
     #[test]
@@ -476,7 +576,6 @@ mod tests {
         assert_eq!(String::from_utf8(bytes).unwrap(), "line 0998\nline 0999\n");
 
         assert!(read_end(&temp.path().join("missing.log"), 25).is_err());
-        assert_eq!(log_tail(&log, 2, true), ["line 0998", "line 0999"]);
     }
 
     #[test]
@@ -493,10 +592,63 @@ mod tests {
         assert!(fs::read_to_string(&log).unwrap().ends_with(
             "--- tool output ---\n\n** (mydumper:1): CRITICAL **: 01:02:03.004: no zstd\n"
         ));
+        let mut reader = LogReader::new(&log, 1_000_000);
         assert_eq!(
-            log_tail(&log, 9, true),
-            ["first", "second", TOOL_OUTPUT_MARKER, "CRITICAL: no zstd"]
+            reader.finish(true),
+            format!("first\nsecond\n{TOOL_OUTPUT_MARKER}\nCRITICAL: no zstd\n")
         );
-        assert_eq!(log_tail(&log, 9, false), ["first", "second"]);
+        assert_eq!(
+            LogReader::new(&log, 1_000_000).finish(false),
+            "first\nsecond\n"
+        );
+    }
+
+    #[test]
+    fn a_growing_log_is_read_a_piece_at_a_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("run.log");
+        let add = |text: &str| {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&log)
+                .unwrap();
+            file.write_all(text.as_bytes()).unwrap();
+        };
+        let mut reader = LogReader::new(&log, 1_000_000);
+        // No file yet.
+        assert_eq!(reader.read_new(), "");
+
+        // A line without its end waits for the rest of it.
+        add("one\n\n** Message: 01:02:03.004: two\nthr");
+        assert_eq!(reader.read_new(), "one\nMessage: two\n");
+        assert_eq!(reader.read_new(), "");
+        add("ee\nfour\n");
+        assert_eq!(reader.read_new(), "three\nfour\n");
+
+        // What the tool printed waits for the end of the run, and a last
+        // line needs no line break there.
+        add(&format!("five\n{TOOL_OUTPUT_MARKER}\nprinted\nlast"));
+        assert_eq!(reader.read_new(), "five\n");
+        assert!(!reader.skipped());
+        assert_eq!(
+            reader.finish(true),
+            format!("{TOOL_OUTPUT_MARKER}\nprinted\nlast\n")
+        );
+    }
+
+    #[test]
+    fn a_reader_starts_near_the_end_of_a_long_log() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("long.log");
+        let text: String = (0..1000).map(|line| format!("line {line:04}\n")).collect();
+        fs::write(&log, &text).unwrap();
+        // 25 bytes from the end is in the middle of a line: the reader
+        // starts at the next whole one, and goes on from there.
+        let mut reader = LogReader::new(&log, 25);
+        assert_eq!(reader.read_new(), "line 0998\nline 0999\n");
+        assert!(reader.skipped());
+        fs::write(&log, format!("{text}more\n")).unwrap();
+        assert_eq!(reader.read_new(), "more\n");
     }
 }
