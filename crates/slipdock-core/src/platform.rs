@@ -319,7 +319,10 @@ mod tests {
         let file = dir.join("secret.cnf");
         create_private_file(&file, b"one").unwrap();
         assert_eq!(mode(&file), 0o600);
-        assert!(create_private_file(&file, b"two").is_err(), "must not overwrite");
+        assert!(
+            create_private_file(&file, b"two").is_err(),
+            "must not overwrite"
+        );
 
         fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
         write_private_file(&file, b"three").unwrap();
@@ -345,7 +348,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn terminate_stops_a_running_process() {
-        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
         terminate(child.id()).unwrap();
         let status = child.wait().unwrap();
         assert!(!status.success());
