@@ -48,9 +48,10 @@ pub struct Outcome {
     /// True when the run was cancelled (Ctrl-C or the Cancel button).
     pub interrupted: bool,
     pub elapsed: Duration,
-    /// The first lines the tool printed itself (not its log file).
+    /// The first lines the tool printed itself (not its log file), without
+    /// empty lines and tidied with [`tidy_line`].
     pub output_head: Vec<String>,
-    /// How many lines it printed in total.
+    /// How many lines it printed in total, not counting empty ones.
     pub output_lines: usize,
 }
 
@@ -163,7 +164,11 @@ pub fn start(invocation: &Invocation, watch: Option<&Path>, log: &Path) -> Resul
 
         let text = read_all(&mut output);
         append_tool_output(&log, &text);
-        let lines: Vec<&str> = text.lines().collect();
+        let lines: Vec<String> = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(tidy_line)
+            .collect();
         let _ = sender.send(Event::Finished(Outcome {
             code: status.and_then(|status| status.code()),
             interrupted: watcher_cancel.is_cancelled(),
@@ -188,13 +193,51 @@ fn read_all(file: &mut File) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// The line in the log file above what the tool printed to its terminal.
+pub const TOOL_OUTPUT_MARKER: &str = "--- tool output ---";
+
 fn append_tool_output(log: &Path, text: &str) {
     if text.is_empty() {
         return;
     }
     if let Ok(mut file) = OpenOptions::new().append(true).create(true).open(log) {
-        let _ = write!(file, "--- tool output ---\n{text}");
+        let _ = write!(file, "{TOOL_OUTPUT_MARKER}\n{text}");
     }
+}
+
+/// Makes a line the tool printed easier to read. mydumper and myloader
+/// print through GLib, which wraps each message:
+///
+/// ```text
+/// ** (mydumper:42720): CRITICAL **: 12:55:04.027: zstd was not found
+/// ```
+///
+/// becomes `CRITICAL: zstd was not found`. Other lines are returned as they
+/// are. The log file keeps the full text.
+pub fn tidy_line(line: &str) -> String {
+    let parsed = || {
+        let rest = line.strip_prefix("** ")?;
+        // Plain messages have a shorter form: `** Message: 12:55:04.027: text`.
+        let (head, message) = rest.split_once(" **: ").or_else(|| {
+            rest.split_once(": ")
+                .filter(|(word, _)| word.chars().all(|c| c.is_ascii_alphabetic()))
+        })?;
+        let level = head.rsplit(' ').next()?;
+        // The time of day, `12:55:04.027: `, when GLib adds one.
+        let message = match message.split_once(": ") {
+            Some((time, rest))
+                if !time.is_empty()
+                    && time
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || c == ':' || c == '.') =>
+            {
+                rest
+            }
+            _ => message,
+        };
+        Some(format!("{level}: {message}"))
+    };
+    parsed().unwrap_or_else(|| line.to_string())
 }
 
 /// The distinct problems in a mydumper/myloader log, sorted: the text after
@@ -219,13 +262,50 @@ pub fn log_problems(log: &Path) -> Vec<String> {
     problems
 }
 
-/// The last `count` lines of a log file, for a live view.
-pub fn log_tail(log: &Path, count: usize) -> Vec<String> {
-    let text = fs::read(log).unwrap_or_default();
+/// How much of the end of a log is read to show its last lines. A log line
+/// is some 100 to 300 bytes, so this holds well over a thousand of them.
+pub const TAIL_BYTES: u64 = 512 * 1024;
+
+/// The end of a file: at most `limit` bytes, and whether that left a part
+/// of the file out. When it did, the bytes start at the first whole line.
+pub fn read_end(path: &Path, limit: u64) -> std::io::Result<(Vec<u8>, bool)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    let cut = size > limit;
+    if cut {
+        file.seek(SeekFrom::Start(size - limit))?;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if cut {
+        // The read starts somewhere in a line: drop up to its end.
+        let first_line_end = bytes.iter().position(|byte| *byte == b'\n');
+        bytes.drain(..first_line_end.map_or(0, |at| at + 1));
+    }
+    Ok((bytes, cut))
+}
+
+/// The last `count` lines of a log file, for a live view: without empty
+/// lines, and tidied with [`tidy_line`].
+///
+/// `with_tool_output: false` leaves out what was added under
+/// [`TOOL_OUTPUT_MARKER`], for a view that shows that text elsewhere.
+///
+/// Only the end of the file is read ([`TAIL_BYTES`]), so a view that asks
+/// every second stays quick however long the log has become.
+pub fn log_tail(log: &Path, count: usize, with_tool_output: bool) -> Vec<String> {
+    let (text, _) = read_end(log, TAIL_BYTES).unwrap_or_default();
     let text = String::from_utf8_lossy(&text);
-    let lines: Vec<&str> = text.lines().collect();
+    let mut lines: Vec<&str> = text.lines().collect();
+    if !with_tool_output
+        && let Some(marker) = lines.iter().rposition(|line| *line == TOOL_OUTPUT_MARKER)
+    {
+        lines.truncate(marker);
+    }
+    lines.retain(|line| !line.trim().is_empty());
     let start = lines.len().saturating_sub(count);
-    lines[start..].iter().map(|line| line.to_string()).collect()
+    lines[start..].iter().map(|line| tidy_line(line)).collect()
 }
 
 #[cfg(all(test, unix))]
@@ -349,6 +429,74 @@ mod tests {
             ["Another", "Broken thing", "Couldn't get master position"]
         );
         assert!(log_problems(&temp.path().join("missing.log")).is_empty());
-        assert_eq!(log_tail(&log, 2).len(), 2);
+        assert_eq!(log_tail(&log, 2, true).len(), 2);
+    }
+
+    #[test]
+    fn glib_lines_are_tidied_and_other_lines_kept() {
+        assert_eq!(
+            tidy_line(
+                "** (mydumper:42720): CRITICAL **: 12:55:04.027: zstd was not found in PATH, use --x"
+            ),
+            "CRITICAL: zstd was not found in PATH, use --x"
+        );
+        assert_eq!(
+            tidy_line("** (myloader:7): WARNING **: no time: here"),
+            "WARNING: no time: here"
+        );
+        assert_eq!(
+            tidy_line("** Message: 01:02:03.004: hello"),
+            "Message: hello"
+        );
+        for plain in [
+            "could not connect",
+            "** odd",
+            "2026-01-02 03:04:05 [INFO] - Connected",
+        ] {
+            assert_eq!(tidy_line(plain), plain);
+        }
+    }
+
+    #[test]
+    fn only_the_end_of_a_long_file_is_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("long.log");
+        let text: String = (0..1000).map(|line| format!("line {line:04}\n")).collect();
+        fs::write(&log, &text).unwrap();
+
+        // The whole file fits: nothing is left out.
+        let (bytes, cut) = read_end(&log, 1_000_000).unwrap();
+        assert!(!cut);
+        assert_eq!(bytes.len(), text.len());
+
+        // 25 bytes from the end is in the middle of a line: the bytes start
+        // at the next whole one.
+        let (bytes, cut) = read_end(&log, 25).unwrap();
+        assert!(cut);
+        assert_eq!(String::from_utf8(bytes).unwrap(), "line 0998\nline 0999\n");
+
+        assert!(read_end(&temp.path().join("missing.log"), 25).is_err());
+        assert_eq!(log_tail(&log, 2, true), ["line 0998", "line 0999"]);
+    }
+
+    #[test]
+    fn the_head_and_the_tail_skip_empty_lines() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("run.log");
+        fs::write(&log, "first\n\nsecond\n").unwrap();
+        let script = r#"printf '\n** (mydumper:1): CRITICAL **: 01:02:03.004: no zstd\n'; exit 1"#;
+        let running = start(&sh(script), None, &log).unwrap();
+        let (outcome, _) = wait(&running);
+        assert_eq!(outcome.output_head, ["CRITICAL: no zstd"]);
+        assert_eq!(outcome.output_lines, 1);
+        // The file keeps what the tool printed, unchanged.
+        assert!(fs::read_to_string(&log).unwrap().ends_with(
+            "--- tool output ---\n\n** (mydumper:1): CRITICAL **: 01:02:03.004: no zstd\n"
+        ));
+        assert_eq!(
+            log_tail(&log, 9, true),
+            ["first", "second", TOOL_OUTPUT_MARKER, "CRITICAL: no zstd"]
+        );
+        assert_eq!(log_tail(&log, 9, false), ["first", "second"]);
     }
 }

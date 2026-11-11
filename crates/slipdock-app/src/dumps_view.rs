@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use gpui_kit::component::button::*;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable, WindowExt as _, h_flex, v_flex,
 };
@@ -301,7 +302,13 @@ impl DumpsView {
     }
 
     fn open_logs(name: String, logs: Vec<dumps::DumpLog>, window: &mut Window, cx: &mut App) {
-        // The builder may run many times, so the logs are shared, not copied.
+        // The builder may run many times, so the logs are shared, not
+        // copied, and their text is made ready for drawing once, here.
+        let texts: std::rc::Rc<Vec<widgets::Log>> = std::rc::Rc::new(
+            logs.iter()
+                .map(|log| widgets::Log::new(&log.text))
+                .collect(),
+        );
         let logs = std::rc::Rc::new(logs);
         window.open_dialog(cx, move |dialog, _, cx| {
             let mut body = v_flex().gap_4().min_w_0();
@@ -338,12 +345,11 @@ impl DumpsView {
                                         .on_click(move |_, _, cx| cx.open_with_system(&file)),
                                 ),
                         )
-                        .when(log.lines_before > 0, |this| {
+                        .when(log.cut, |this| {
                             this.child(widgets::hint(
                                 format!(
-                                    "The last {} lines; {} earlier ones are in the file.",
-                                    dumps::LOG_LINES,
-                                    log.lines_before
+                                    "The end of the log. All of it ({}) is in the file.",
+                                    dumps::human_size(log.size)
                                 ),
                                 cx,
                             ))
@@ -351,7 +357,7 @@ impl DumpsView {
                         .child(if log.text.trim().is_empty() {
                             widgets::hint("The log is empty.", cx)
                         } else {
-                            widgets::mono(&log.text, cx).text_xs()
+                            widgets::log_text(("log-text", index), &texts[index], None, cx)
                         }),
                 );
             }
@@ -361,12 +367,16 @@ impl DumpsView {
                 .child(
                     // The logs scroll inside the dialog, and keep the scroll
                     // from the page behind it.
+                    // `overflow_y_scrollbar` is `overflow_y_scroll` with a
+                    // scroll bar drawn over the right edge; the padding
+                    // keeps the text out from under it.
                     div()
-                        .id("dump-logs")
                         .max_h(px(420.))
-                        .overflow_y_scroll()
                         .occlude()
-                        .child(body),
+                        .pr_4()
+                        .child(body)
+                        .overflow_y_scrollbar()
+                        .id("dump-logs"),
                 )
                 .footer(
                     h_flex().justify_end().child(

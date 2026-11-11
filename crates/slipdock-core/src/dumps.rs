@@ -96,8 +96,10 @@ pub struct DumpLog {
     pub title: String,
     /// The end of the log, at most [`LOG_LINES`] lines.
     pub text: String,
-    /// How many earlier lines are not in `text`.
-    pub lines_before: usize,
+    /// Whether the log has earlier lines that are not in `text`.
+    pub cut: bool,
+    /// The size of the whole log file, in bytes.
+    pub size: u64,
 }
 
 /// The lines of a log that are read for showing; a long log is cut at its
@@ -144,17 +146,22 @@ fn load_stamp(file: &str) -> &str {
 }
 
 fn read_log(path: PathBuf, title: String) -> DumpLog {
-    // A log may hold bytes that are not UTF-8 (a table name, a value).
-    let text = fs::read(&path)
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .unwrap_or_else(|error| format!("cannot read the log: {error}"));
+    let size = fs::metadata(&path).map_or(0, |meta| meta.len());
+    // Only the end of the file is read: a log can be many megabytes, and
+    // its last lines are what is shown.
+    let (text, cut_by_bytes) = match crate::run::read_end(&path, crate::run::TAIL_BYTES) {
+        // A log may hold bytes that are not UTF-8 (a table name, a value).
+        Ok((bytes, cut)) => (String::from_utf8_lossy(&bytes).into_owned(), cut),
+        Err(error) => (format!("cannot read the log: {error}"), false),
+    };
     let lines: Vec<&str> = text.lines().collect();
-    let lines_before = lines.len().saturating_sub(LOG_LINES);
+    let first = lines.len().saturating_sub(LOG_LINES);
     DumpLog {
         path,
         title,
-        text: lines[lines_before..].join("\n"),
-        lines_before,
+        text: lines[first..].join("\n"),
+        cut: cut_by_bytes || first > 0,
+        size,
     }
 }
 
@@ -350,7 +357,9 @@ mod tests {
             ]
         );
         // A long log keeps its end.
-        assert_eq!(found[0].lines_before, 5);
+        assert!(found[0].cut);
+        assert_eq!(found[0].size, long.len() as u64);
+        assert!(!found[1].cut);
         assert!(
             found[0].text.starts_with("line 5\n"),
             "{}",

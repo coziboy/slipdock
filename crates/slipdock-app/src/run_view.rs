@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::*;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::dumps;
@@ -23,17 +23,27 @@ use slipdock_core::job::Prepared;
 use slipdock_core::report::{self, Line, Report};
 use slipdock_core::run::{self, Cancel, Event, Progress};
 
+use crate::state::core;
 use crate::widgets;
 
-/// How many lines of the log are shown while the tool runs.
-const TAIL_LINES: usize = 14;
+/// How many lines of the end of the log are kept for the log box. The box
+/// shows some of them and scrolls back through the rest; the file has all.
+/// The number is a bound on the work of drawing the box, which lays out
+/// every line it holds.
+const TAIL_LINES: usize = 300;
 
 pub struct RunView {
     label: SharedString,
     summary: Vec<Line>,
     log: PathBuf,
     progress: Option<Progress>,
-    tail: Vec<String>,
+    tail: widgets::Log,
+    /// Where the log box is scrolled to.
+    log_scroll: ScrollHandle,
+    /// The lines of the log are on show. They start hidden: the line with
+    /// the spinner says how far the run is, and the log is for looking
+    /// closer.
+    pub(crate) log_open: bool,
     /// Present while the tool runs.
     cancel: Option<Cancel>,
     cancelling: bool,
@@ -52,7 +62,9 @@ impl RunView {
             summary,
             log: prepared.log.clone(),
             progress: None,
-            tail: Vec::new(),
+            tail: widgets::Log::default(),
+            log_scroll: ScrollHandle::new(),
+            log_open: false,
             cancel: None,
             cancelling: false,
             report: None,
@@ -101,6 +113,19 @@ impl RunView {
         self.report.is_some()
     }
 
+    /// Takes the new end of the log. The box follows the newest line while
+    /// it is scrolled to the end; scrolled back to read, it stays where it
+    /// is.
+    fn set_tail(&mut self, tail: Vec<String>) {
+        // Offsets go down from zero as the box is scrolled.
+        let end = -self.log_scroll.max_offset().y;
+        let at_end = self.log_scroll.offset().y <= end + px(8.);
+        self.tail = widgets::Log::new(&tail.join("\n"));
+        if at_end {
+            self.log_scroll.scroll_to_bottom();
+        }
+    }
+
     fn on_event(&mut self, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::Progress(progress) => {
@@ -110,12 +135,17 @@ impl RunView {
                     .as_ref()
                     .is_none_or(|old| old.elapsed.as_secs() != progress.elapsed.as_secs());
                 if second_changed {
-                    self.tail = run::log_tail(&self.log, TAIL_LINES);
+                    self.set_tail(run::log_tail(&self.log, TAIL_LINES, true));
                 }
                 self.progress = Some(progress);
             }
             Event::Finished(outcome) => {
-                self.tail = run::log_tail(&self.log, TAIL_LINES);
+                // After a failed run the report quotes what the tool printed,
+                // so the log box leaves that part out, unless the report
+                // had no room for all of it.
+                let quoted_in_full =
+                    outcome.exit_code() != 0 && outcome.output_lines <= outcome.output_head.len();
+                self.set_tail(run::log_tail(&self.log, TAIL_LINES, !quoted_in_full));
                 // The same report the command line tool prints.
                 self.report = self
                     .prepared
@@ -187,12 +217,45 @@ impl Render for RunView {
                 )
             })
             .when(!self.tail.is_empty(), |this| {
+                let open = self.log_open;
                 this.child(
                     v_flex()
-                        .gap_1()
+                        .gap_2()
                         .min_w_0()
-                        .child(widgets::hint(format!("Log: {}", self.log.display()), cx))
-                        .child(widgets::mono(&self.tail.join("\n"), cx)),
+                        .child(
+                            h_flex().child(
+                                Button::new("toggle-log")
+                                    .small()
+                                    .ghost()
+                                    .icon(if open {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .label(if open { "Hide log" } else { "Show log" })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.log_open = !this.log_open;
+                                        // Opened, the box starts at the newest line.
+                                        this.log_scroll.scroll_to_bottom();
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                        .when(open, |this| {
+                            this.child(widgets::hint(
+                                format!(
+                                    "Log: {}",
+                                    widgets::tilde_path(&self.log, core(cx).home.as_deref())
+                                ),
+                                cx,
+                            ))
+                            .child(widgets::log_text(
+                                "run-log",
+                                &self.tail,
+                                Some(&self.log_scroll),
+                                cx,
+                            ))
+                        }),
                 )
             })
             .when_some(self.report.as_ref(), |this, report| {

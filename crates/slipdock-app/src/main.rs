@@ -82,6 +82,10 @@ fn main() {
     let application = gpui_kit::application().with_assets(AppAssets);
     application.run(move |cx| {
         gpui_kit::init(cx);
+        // Scroll bars stay on show, not only while scrolling: a log box
+        // should say at a glance that there is more above or below.
+        gpui_kit::component::Theme::global_mut(cx).scrollbar_mode =
+            gpui_kit::component::scroll::ScrollbarMode::Always;
         cx.set_global(Core(context));
 
         cx.on_action(|_: &Quit, cx| cx.quit());
