@@ -211,10 +211,16 @@ mod tests {
         };
         assert_eq!(find(&["a-schema-create.sql"]).as_deref(), Some("a"));
         assert_eq!(find(&["a-schema-create.sql.gz"]).as_deref(), Some("a"));
-        assert_eq!(find(&["my-db-schema-create.sql.zst"]).as_deref(), Some("my-db"));
+        assert_eq!(
+            find(&["my-db-schema-create.sql.zst"]).as_deref(),
+            Some("my-db")
+        );
         assert_eq!(find(&["a-schema-create.sqlx", "metadata"]), None);
         assert_eq!(find(&["-schema-create.sql"]), None);
-        assert_eq!(find(&["b-schema-create.sql", "a-schema-create.sql"]).as_deref(), Some("b"));
+        assert_eq!(
+            find(&["b-schema-create.sql", "a-schema-create.sql"]).as_deref(),
+            Some("b")
+        );
     }
 
     #[test]
@@ -247,7 +253,10 @@ mod tests {
         ];
         assert_eq!(
             roots(&profiles, Some(Path::new("/home/example"))),
-            [PathBuf::from("/home/example/dumps"), PathBuf::from("/srv/dumps")]
+            [
+                PathBuf::from("/home/example/dumps"),
+                PathBuf::from("/srv/dumps")
+            ]
         );
     }
 

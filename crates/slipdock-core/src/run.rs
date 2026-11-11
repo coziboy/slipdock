@@ -146,10 +146,11 @@ pub fn start(invocation: &Invocation, watch: Option<&Path>, log: &Path) -> Resul
                 let _ = platform::terminate(child.id());
                 signalled = true;
             }
-            if let Some(dir) = watch.as_deref().filter(|_| tick % MEASURE_EVERY == 0) {
-                if dir.is_dir() {
-                    written = Some((dumps::sql_file_count(dir), dumps::dir_size(dir)));
-                }
+            if let Some(dir) = watch.as_deref()
+                && tick % MEASURE_EVERY == 0
+                && dir.is_dir()
+            {
+                written = Some((dumps::sql_file_count(dir), dumps::dir_size(dir)));
             }
             // A send fails only when the receiver is gone; the run goes on.
             let _ = sender.send(Event::Progress(Progress {
@@ -281,10 +282,18 @@ mod tests {
     fn a_failing_run_keeps_the_first_lines_of_output() {
         let temp = tempfile::tempdir().unwrap();
         let log = temp.path().join("run.log");
-        let running = start(&sh("for i in 1 2 3 4 5 6; do echo line $i >&2; done; exit 3"), None, &log).unwrap();
+        let running = start(
+            &sh("for i in 1 2 3 4 5 6; do echo line $i >&2; done; exit 3"),
+            None,
+            &log,
+        )
+        .unwrap();
         let (outcome, _) = wait(&running);
         assert_eq!(outcome.exit_code(), 3);
-        assert_eq!(outcome.output_head, ["line 1", "line 2", "line 3", "line 4"]);
+        assert_eq!(
+            outcome.output_head,
+            ["line 1", "line 2", "line 3", "line 4"]
+        );
         assert_eq!(outcome.output_lines, 6);
     }
 
@@ -315,7 +324,9 @@ mod tests {
             args: Vec::new(),
             env: Vec::new(),
         };
-        let error = start(&invocation, None, Path::new("/tmp/unused.log")).err().unwrap();
+        let error = start(&invocation, None, Path::new("/tmp/unused.log"))
+            .err()
+            .unwrap();
         assert!(error.to_string().starts_with("cannot start /no/such/tool"));
     }
 
