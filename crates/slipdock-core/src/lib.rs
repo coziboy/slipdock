@@ -9,9 +9,13 @@ pub mod command;
 pub mod dumps;
 pub mod error;
 pub mod exec;
+pub mod job;
 pub mod platform;
 pub mod profile;
+pub mod report;
 pub mod run;
+pub mod secrets;
+pub mod server;
 pub mod settings;
 pub mod tools;
 

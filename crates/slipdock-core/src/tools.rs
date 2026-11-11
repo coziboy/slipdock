@@ -389,12 +389,20 @@ pub fn status(tool: Tool, settings: &Settings, dirs: &SearchDirs) -> Status {
 }
 
 /// The path to use for `tool`, or an error that says what to do.
+///
+/// Unlike [`status`] this stops at the first candidate that works, so a
+/// normal run starts a single probe.
 pub fn resolve(tool: Tool, settings: &Settings, dirs: &SearchDirs) -> Result<PathBuf> {
-    let status = status(tool, settings, dirs);
-    match status.path() {
-        Some(path) => Ok(path.to_path_buf()),
-        None => Err(Error::msg(status.problem().unwrap_or_default())),
-    }
+    let working = match settings.tool_path(tool.name()) {
+        Some(path) => probe(tool, path).ok().map(|_| path.to_path_buf()),
+        None => candidates(tool, dirs)
+            .into_iter()
+            .find(|path| probe(tool, path).is_ok()),
+    };
+    working.ok_or_else(|| {
+        // Something is wrong: look at everything to explain it well.
+        Error::msg(status(tool, settings, dirs).problem().unwrap_or_default())
+    })
 }
 
 // --- Install plan ------------------------------------------------------------------
