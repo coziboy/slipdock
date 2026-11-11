@@ -1,14 +1,14 @@
-//! Dump: profile -> database -> tables to leave out -> folder and log level
+//! Dump: profile -> database -> tables to dump -> folder
 //! -> command preview -> run.
 //!
-//! Every step works without a connection: lists come from the server when
-//! the mysql client can reach it, and the names can always be typed.
+//! The lists come from the server. When it does not answer, the screen says
+//! so instead of showing the rest of the form.
 
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::*;
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{ActiveTheme, IconName, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::job::{self, DumpOptions};
@@ -17,45 +17,92 @@ use slipdock_core::server::{self, Table};
 use slipdock_core::{Error, platform, profile};
 
 use crate::run_view::RunView;
-use crate::state::core;
+use crate::state::{Core, core, log_options};
 use crate::widgets::{self, Tone};
+
+/// The rows the table list shows at its full height (220 px) before it
+/// starts to scroll.
+const ROWS_WITHOUT_SCROLL: usize = 7;
 
 pub struct DumpView {
     profiles: Vec<String>,
     profile: Option<String>,
     pub(crate) database: Entity<InputState>,
-    /// Names typed by hand, in addition to the ticked tables.
+    /// Names to leave out, typed by hand. Used only when the server could
+    /// not list the tables.
     exclude: Entity<InputState>,
-    out: Entity<InputState>,
+    /// Narrows the table list to the names that contain this text.
+    pub(crate) filter: Entity<InputState>,
+    pub(crate) out: Entity<InputState>,
     databases: Vec<String>,
-    /// Tables and views of the chosen database; `true` = leave out.
-    tables: Vec<(Table, bool)>,
+    /// Tables and views of the chosen database; `true` = dumped.
+    pub(crate) tables: Vec<(Table, bool)>,
+    /// The database `tables` was listed for. The selection is remembered
+    /// under this name, also when the name in the form is edited later.
+    listed: Option<String>,
+    /// The server could not list the tables: the names to leave out are
+    /// typed instead.
+    pub(crate) tables_failed: bool,
+    /// Why the server of the profile did not answer. While this is set the
+    /// rest of the form is not shown.
+    pub(crate) connect_error: Option<String>,
+    /// The server is being asked for its databases.
+    listing_databases: bool,
+    /// The server is being asked for the tables of the database.
+    listing_tables: bool,
     /// What the last attempt to list databases or tables said.
     list_note: Option<String>,
-    /// `None` = the profile's own log level.
-    level: Option<u8>,
     /// The result of "Show command": summary and command, or an error.
     pub(crate) preview: Option<Result<(Vec<Line>, String), String>>,
+    /// A command is being prepared. Nothing is drawn for it: preparing takes
+    /// a moment too short to read a loader in, so one would only flash. It
+    /// keeps a second click from starting the same thing twice.
     busy: bool,
     /// Present while a dump runs and until its report is closed.
     pub(crate) run: Option<Entity<RunView>>,
+    /// A subscription ends when it is dropped, so the view keeps it.
+    _subscription: Subscription,
+    _database_subscription: Subscription,
 }
 
 impl DumpView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter tables"));
+        // The list is drawn by this view, so it draws again when the filter
+        // text changes.
+        let subscription = cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        let database =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Type to search the databases"));
+        // The list of databases follows what is typed.
+        let database_subscription = cx.subscribe(&database, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
         let mut view = DumpView {
             profiles: Vec::new(),
             profile: None,
-            database: cx.new(|cx| InputState::new(window, cx).placeholder("database name")),
+            database,
             exclude: cx.new(|cx| InputState::new(window, cx).placeholder("table1, table2")),
+            filter,
             out: cx.new(|cx| InputState::new(window, cx).placeholder("folder for the dump")),
             databases: Vec::new(),
             tables: Vec::new(),
+            listed: None,
+            tables_failed: false,
+            connect_error: None,
+            listing_databases: false,
+            listing_tables: false,
             list_note: None,
-            level: None,
             preview: None,
             busy: false,
             run: None,
+            _subscription: subscription,
+            _database_subscription: database_subscription,
         };
         view.reload(cx);
         view
@@ -78,46 +125,53 @@ impl DumpView {
         cx: &mut Context<Self>,
     ) {
         let ctx = core(cx);
-        // Show the profile's dump folder as the default; it can be changed
-        // for this dump.
+        // Show the profile's dump folder as the default, written the way
+        // the profile form writes it; it can be changed for this dump.
         let dump_dir = ctx
             .profile(&name)
             .ok()
             .and_then(|profile| profile.dump_dir(ctx.home.as_deref()))
-            .map(|dir| dir.to_string_lossy().into_owned())
+            .map(|dir| widgets::tilde_path(&dir, ctx.home.as_deref()))
             .unwrap_or_default();
         self.out
             .update(cx, |input, cx| input.set_value(dump_dir, window, cx));
         self.profile = Some(name);
         self.databases.clear();
         self.tables.clear();
+        self.listed = None;
+        self.tables_failed = false;
         self.list_note = None;
         self.preview = None;
         self.list_databases(cx);
     }
 
     /// Asks the server for its databases, in the background.
-    fn list_databases(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn list_databases(&mut self, cx: &mut Context<Self>) {
         let Some(name) = self.profile.clone() else {
             return;
         };
         let ctx = core(cx);
-        self.list_note = Some("Asking the server for its databases…".into());
+        self.list_note = None;
+        self.connect_error = None;
+        self.listing_databases = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { server::databases(&ctx, &ctx.profile(&name)?) })
+                .spawn({
+                    let name = name.clone();
+                    async move { server::databases(&ctx, &ctx.profile(&name)?) }
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                // An answer for a profile that is no longer chosen is dropped.
+                if this.profile.as_ref() != Some(&name) {
+                    return;
+                }
+                this.listing_databases = false;
                 match result {
-                    Ok(databases) => {
-                        this.databases = databases;
-                        this.list_note = None;
-                    }
-                    Err(error) => {
-                        this.list_note = Some(format!("{error}. Type the database name instead."));
-                    }
+                    Ok(databases) => this.databases = databases,
+                    Err(error) => this.connect_error = Some(error.to_string()),
                 }
                 cx.notify();
             });
@@ -128,10 +182,10 @@ impl DumpView {
     fn pick_database(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         self.database
             .update(cx, |input, cx| input.set_value(name, window, cx));
-        self.list_tables(cx);
+        self.list_tables(window, cx);
     }
 
-    fn list_tables(&mut self, cx: &mut Context<Self>) {
+    fn list_tables(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(name) = self.profile.clone() else {
             return;
         };
@@ -141,20 +195,33 @@ impl DumpView {
         }
         let ctx = core(cx);
         self.tables.clear();
+        self.listed = None;
+        self.tables_failed = false;
+        self.listing_tables = true;
+        self.list_note = None;
+        cx.notify();
+        // A filter for the old list would hide tables of the new one.
+        self.filter
+            .update(cx, |input, cx| input.set_value("", window, cx));
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { server::tables(&ctx, &ctx.profile(&name)?, &database) })
+                .spawn({
+                    let database = database.clone();
+                    async move { server::tables(&ctx, &ctx.profile(&name)?, &database) }
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.listing_tables = false;
                 match result {
                     Ok(tables) => {
-                        this.tables = tables.into_iter().map(|table| (table, false)).collect();
+                        this.show_tables(database, tables, cx);
                         this.list_note = None;
                     }
                     Err(error) => {
+                        this.tables_failed = true;
                         this.list_note =
-                            Some(format!("{error}. Type the tables to leave out instead."));
+                            Some(format!("{error}. Type the tables to leave out below."));
                     }
                 }
                 cx.notify();
@@ -163,25 +230,132 @@ impl DumpView {
         .detach();
     }
 
+    /// Opens the system's folder dialog and puts the chosen folder in the
+    /// form, for this dump only: the profile keeps its own dump folder.
+    pub(crate) fn choose_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Dump into this folder".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            // Ok(Ok(Some(paths))) = the user picked something.
+            if let Ok(Ok(Some(paths))) = chosen.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let text = widgets::tilde_path(&path, core(cx).home.as_deref());
+                    this.out
+                        .update(cx, |input, cx| input.set_value(text, window, cx));
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Puts the tables of a database in the form. Every table is ticked,
+    /// except the ones left out the last time with this profile and
+    /// database; a table that is new since then is ticked.
+    pub(crate) fn show_tables(&mut self, database: String, tables: Vec<Table>, cx: &App) {
+        let profile = self.profile.clone().unwrap_or_default();
+        let settings = core(cx).settings;
+        let left_out = settings.left_out(&profile, &database);
+        self.tables = tables
+            .into_iter()
+            .map(|table| {
+                let selected = !left_out.contains(&table.name);
+                (table, selected)
+            })
+            .collect();
+        self.listed = Some(database);
+    }
+
+    /// Writes the unticked tables to the settings, so the same selection
+    /// comes back the next time this database is listed.
+    fn remember(&mut self, cx: &mut Context<Self>) {
+        let (Some(profile), Some(database)) = (self.profile.clone(), self.listed.clone()) else {
+            return;
+        };
+        let left_out = self.left_out();
+        let result = cx.update_global::<Core, _>(|core, _| {
+            core.0.settings.set_left_out(&profile, &database, left_out);
+            core.0.settings.save(&core.0.config_dir)
+        });
+        if let Err(error) = result {
+            self.list_note = Some(format!("The selection is not remembered: {error}"));
+        }
+    }
+
+    /// Whether the table list is of another database than the one in the
+    /// field now (the name was changed after the tables were listed).
+    pub(crate) fn tables_stale(&self, cx: &App) -> bool {
+        let database = self.database.read(cx).value();
+        self.listed
+            .as_ref()
+            .is_some_and(|listed| listed != database.trim())
+    }
+
+    /// The names of the unticked tables.
+    fn left_out(&self) -> Vec<String> {
+        self.tables
+            .iter()
+            .filter(|(_, selected)| !*selected)
+            .map(|(table, _)| table.name.clone())
+            .collect()
+    }
+
+    /// Ticks or unticks one table.
+    pub(crate) fn set_table(&mut self, index: usize, selected: bool, cx: &mut Context<Self>) {
+        self.tables[index].1 = selected;
+        self.remember(cx);
+        cx.notify();
+    }
+
+    /// The indexes into `tables` of the rows the filter shows.
+    fn shown(&self, cx: &App) -> Vec<usize> {
+        let filter = self.filter.read(cx).value().trim().to_lowercase();
+        self.tables
+            .iter()
+            .enumerate()
+            .filter(|(_, (table, _))| table.name.to_lowercase().contains(&filter))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Ticks or unticks the rows the filter shows; hidden rows keep their
+    /// state.
+    pub(crate) fn set_shown(&mut self, selected: bool, cx: &mut Context<Self>) {
+        for index in self.shown(cx) {
+            self.tables[index].1 = selected;
+        }
+        self.remember(cx);
+        cx.notify();
+    }
+
     /// The form as the options the core understands: the same ones the
     /// command line tool builds from its arguments.
-    fn options(&self, dry_run: bool, cx: &App) -> DumpOptions {
-        let mut exclude: Vec<String> = self
-            .tables
-            .iter()
-            .filter(|(_, excluded)| *excluded)
-            .map(|(table, _)| table.name.clone())
-            .collect();
-        exclude.push(self.exclude.read(cx).value().to_string());
+    pub(crate) fn options(&self, dry_run: bool, cx: &App) -> DumpOptions {
+        // mydumper takes the tables to leave out: the unticked ones, or the
+        // typed names when there is no list.
+        let exclude: Vec<String> = if self.tables_failed {
+            vec![self.exclude.read(cx).value().to_string()]
+        } else if self.tables_stale(cx) {
+            // The list is of another database: nothing of it applies.
+            Vec::new()
+        } else {
+            self.left_out()
+        };
         let out = self.out.read(cx).value().trim().to_string();
         let home = core(cx).home;
+        let (log_level, extra_args) = log_options(dry_run);
         DumpOptions {
             profile: self.profile.clone().unwrap_or_default(),
             database: self.database.read(cx).value().trim().to_string(),
             exclude,
             out: (!out.is_empty()).then(|| platform::expand_tilde(&out, home.as_deref())),
-            log_level: self.level,
-            extra_args: Vec::new(),
+            log_level,
+            extra_args,
             dry_run,
         }
     }
@@ -189,11 +363,26 @@ impl DumpView {
     /// Plans and prepares the dump in the background. A dry run then shows
     /// the command; a real run hands over to a `RunView`.
     pub(crate) fn prepare(&mut self, dry_run: bool, cx: &mut Context<Self>) {
+        if !self.tables.is_empty()
+            && !self.tables_stale(cx)
+            && self.tables.iter().all(|(_, selected)| !*selected)
+        {
+            self.preview = Some(Err("Select at least one table to dump.".into()));
+            cx.notify();
+            return;
+        }
+        if self.busy {
+            return;
+        }
         let ctx = core(cx);
         let options = self.options(dry_run, cx);
         self.busy = true;
-        self.preview = None;
-        cx.notify();
+        // "Show command" keeps the command that is on show until the new
+        // one takes its place, so the page does not jump.
+        if !dry_run {
+            self.preview = None;
+            cx.notify();
+        }
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -250,40 +439,46 @@ impl DumpView {
         }
         let mut source =
             widgets::section("Source", cx).child(widgets::field("Profile", profiles, cx));
-        if self.profile.is_none() {
+        let Some(profile) = self.profile.clone() else {
             return page.child(source);
+        };
+        // The rest of the form waits for the server's answer, and is not
+        // shown when there is none.
+        if self.listing_databases {
+            return page
+                .child(source.child(widgets::loading(format!("Connecting with {profile}…"), cx)));
+        }
+        if let Some(error) = self.connect_error.clone() {
+            return page.child(source).child(widgets::connection_failed(
+                &profile,
+                &error,
+                Button::new("dump-retry")
+                    .on_click(cx.listener(|this, _, _, cx| this.list_databases(cx))),
+                cx,
+            ));
         }
 
         // 2. Database
-        let mut databases = widgets::wrap_row();
-        for (index, name) in self.databases.iter().enumerate() {
-            let picked = name.clone();
-            databases = databases.child(
-                Button::new(("dump-db", index))
-                    .small()
-                    .outline()
-                    .max_w_full()
-                    .label(name.clone())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.pick_database(picked.clone(), window, cx)
-                    })),
-            );
-        }
+        // The name field narrows the list under it; a click on a row
+        // takes that database and lists its tables.
+        let typed = self.database.read(cx).value().to_string();
+        let databases = widgets::database_list(
+            "dump-databases",
+            &self.databases,
+            &typed,
+            |name| {
+                Box::new(cx.listener(move |this, _, window, cx| {
+                    this.pick_database(name.clone(), window, cx)
+                }))
+            },
+            cx,
+        );
         source = source.child(widgets::field(
             "Database",
             v_flex()
                 .gap_2()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(div().flex_1().min_w_0().child(Input::new(&self.database)))
-                        .child(
-                            Button::new("list-tables")
-                                .label("List tables")
-                                .on_click(cx.listener(|this, _, _, cx| this.list_tables(cx))),
-                        ),
-                )
-                .when(!self.databases.is_empty(), |this| this.child(databases))
+                .child(Input::new(&self.database).cleanable(true))
+                .children(databases)
                 .when_some(self.list_note.clone(), |this, note| {
                     this.child(widgets::hint(note, cx))
                 }),
@@ -291,84 +486,183 @@ impl DumpView {
         ));
         page = page.child(source);
 
-        // 3. Tables and views to leave out
-        let mut leave_out = widgets::section("Leave out", cx);
-        if !self.tables.is_empty() {
+        // 3. Tables and views to dump
+        let mut tables = widgets::section("Tables", cx);
+        if self.listing_tables {
+            tables = tables.child(widgets::loading("Asking the server for the tables…", cx));
+        } else if self.tables_failed {
+            // No list from the server: the names to leave out can be typed.
+            tables = tables.child(widgets::field(
+                "Leave out",
+                v_flex()
+                    .gap_2()
+                    .child(Input::new(&self.exclude))
+                    .child(widgets::hint(
+                        "Every table and view is dumped, except the names typed here, \
+                         separated by commas.",
+                        cx,
+                    ))
+                    .child(
+                        h_flex().child(
+                            Button::new("list-tables")
+                                .outline()
+                                .icon(IconName::RefreshCw)
+                                .label("List tables again")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.list_tables(window, cx)),
+                                ),
+                        ),
+                    ),
+                cx,
+            ));
+        } else if self.tables.is_empty() || self.tables_stale(cx) {
+            // Not listed yet, or listed for another database than the one
+            // in the field now: the button that lists them is here.
+            let database = self.database.read(cx).value().trim().to_string();
+            let about = if database.is_empty() {
+                "Choose a database first. Its tables can then be listed here to select \
+                 which are dumped."
+                    .to_string()
+            } else {
+                format!(
+                    "List the tables of {database} to select which are dumped. Without \
+                     a selection, every table and view is dumped."
+                )
+            };
+            tables = tables.child(widgets::hint(about, cx)).child(
+                h_flex().child(
+                    Button::new("list-tables")
+                        .outline()
+                        .label("List tables")
+                        .disabled(database.is_empty())
+                        .on_click(cx.listener(|this, _, window, cx| this.list_tables(window, cx))),
+                ),
+            );
+        } else {
+            let shown = self.shown(cx);
+            let selected = self.tables.iter().filter(|(_, selected)| *selected).count();
             let mut checklist = v_flex().gap_1p5();
-            for (index, (table, excluded)) in self.tables.iter().enumerate() {
+            for &index in &shown {
+                let (table, selected) = &self.tables[index];
                 let label = if table.is_view {
                     format!("{}  (view)", table.name)
                 } else {
                     table.name.clone()
                 };
                 checklist = checklist.child(
-                    Checkbox::new(("exclude", index))
+                    // The id is the place in `tables`, not in the shown rows,
+                    // so a tick lands on the right table under a filter.
+                    Checkbox::new(("dump-table", index))
                         // Bounded by its parent, so a long label wraps.
                         .w_full()
                         .label(label)
-                        .checked(*excluded)
+                        .checked(*selected)
                         .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                            this.tables[index].1 = *checked;
-                            cx.notify();
+                            this.set_table(index, *checked, cx);
                         })),
                 );
             }
-            leave_out = leave_out.child(widgets::field(
-                "Tables",
-                // A database can have hundreds of tables: the list scrolls
-                // on its own, so the rest of the form stays in reach.
-                div()
-                    .id("exclude-list")
-                    .max_h(px(220.))
-                    .overflow_y_scroll()
-                    .p_2()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(checklist),
+            if shown.is_empty() {
+                checklist = checklist.child(widgets::hint("No table matches the filter.", cx));
+            }
+            let filtered = shown.len() < self.tables.len();
+            tables = tables.child(widgets::field(
+                "Include",
+                v_flex()
+                    .gap_2()
+                    .child(
+                        widgets::wrap_row()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_grow(1.)
+                                    .flex_basis(px(160.))
+                                    .min_w_0()
+                                    .child(Input::new(&self.filter)),
+                            )
+                            .child(
+                                Button::new("tables-all")
+                                    .outline()
+                                    .label(if filtered {
+                                        "Select shown"
+                                    } else {
+                                        "Select all"
+                                    })
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.set_shown(true, cx)),
+                                    ),
+                            )
+                            .child(
+                                Button::new("tables-none")
+                                    .outline()
+                                    .label(if filtered {
+                                        "Deselect shown"
+                                    } else {
+                                        "Select none"
+                                    })
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.set_shown(false, cx)),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        // A database can have hundreds of tables: the list
+                        // scrolls on its own, so the rest of the form stays
+                        // in reach.
+                        div()
+                            .id("table-list")
+                            .max_h(px(220.))
+                            .overflow_y_scroll()
+                            // GPUI gives a scroll to every scrolling
+                            // element under the pointer. `occlude` hides
+                            // the page behind the list from the pointer, so
+                            // only the list moves. A list short enough to
+                            // show all its rows does not scroll: there the
+                            // page keeps the scroll.
+                            .when(shown.len() > ROWS_WITHOUT_SCROLL, |this| this.occlude())
+                            .p_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(checklist),
+                    )
+                    .child(widgets::hint(
+                        format!(
+                            "{selected} of {} selected. Tables and views without a tick \
+                             are left out of the dump. The selection is remembered for this \
+                             profile and database.",
+                            self.tables.len()
+                        ),
+                        cx,
+                    )),
                 cx,
             ));
         }
-        leave_out = leave_out.child(widgets::field(
-            if self.tables.is_empty() {
-                "Tables"
-            } else {
-                "Also"
-            },
-            v_flex()
-                .gap_1()
-                .child(Input::new(&self.exclude))
-                .child(widgets::hint(
-                    "Names of tables and views that are not dumped, separated by commas.",
-                    cx,
-                )),
-            cx,
-        ));
-        page = page.child(leave_out);
+        page = page.child(tables);
 
-        // 4. Folder and log level
-        let mut levels = widgets::wrap_row();
-        let choices: [(Option<u8>, &str); 5] = [
-            (None, "From profile"),
-            (Some(0), "0 silent"),
-            (Some(1), "1 errors"),
-            (Some(2), "2 warnings"),
-            (Some(3), "3 info"),
-        ];
-        for (index, (level, label)) in choices.into_iter().enumerate() {
-            levels = levels.child(
-                widgets::choice(("dump-level", index), label, self.level == level).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.level = level;
-                        cx.notify();
-                    }),
-                ),
-            );
-        }
+        // 4. Folder
         page = page.child(
             widgets::section("Output", cx)
-                .child(widgets::field("Folder", Input::new(&self.out), cx))
-                .child(widgets::field("Log level", levels, cx)),
+                .child(widgets::field(
+                    "Folder",
+                    h_flex()
+                        .gap_2()
+                        .child(div().flex_1().min_w_0().child(Input::new(&self.out)))
+                        .child(
+                            Button::new("choose-dump-out")
+                                .outline()
+                                .icon(IconName::FolderOpen)
+                                .tooltip("Choose a folder")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.choose_out(window, cx)),
+                                ),
+                        ),
+                    cx,
+                ))
+                .child(widgets::hint(
+                    "A full log is written beside the dump. The Dumps screen shows it.",
+                    cx,
+                )),
         );
 
         // 5. Preview and run
@@ -378,14 +672,12 @@ impl DumpView {
                     Button::new("dump-run")
                         .primary()
                         .label("Run dump")
-                        .disabled(self.busy)
                         .on_click(cx.listener(|this, _, _, cx| this.prepare(false, cx))),
                 )
                 .child(
                     Button::new("dump-dry")
                         .outline()
-                        .label("Dry run (show command)")
-                        .disabled(self.busy)
+                        .label("Show command")
                         .on_click(cx.listener(|this, _, _, cx| this.prepare(true, cx))),
                 ),
         );
