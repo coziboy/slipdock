@@ -7,6 +7,9 @@
 //! [tools.mysql]
 //! source = "path"
 //! path = "/opt/homebrew/opt/mysql-client/bin/mysql"
+//!
+//! [left-out.production]
+//! sales = ["activity_log", "jobs"]
 //! ```
 
 use std::collections::BTreeMap;
@@ -24,6 +27,16 @@ pub struct Settings {
     /// not listed is searched for automatically.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tools: BTreeMap<String, ToolSetting>,
+    /// The tables and views the app last left out of a dump, by profile and
+    /// then database. The app ticks the others when it lists the tables
+    /// again. The command line tool does not read this: it leaves out what
+    /// `--exclude` names.
+    #[serde(
+        default,
+        rename = "left-out",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub left_out: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +104,29 @@ impl Settings {
     pub fn unset_tool_path(&mut self, tool: &str) {
         self.tools.remove(tool);
     }
+
+    /// The tables last left out of a dump of this database with this profile.
+    pub fn left_out(&self, profile: &str, database: &str) -> &[String] {
+        self.left_out
+            .get(profile)
+            .and_then(|databases| databases.get(database))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Remembers the tables left out; an empty list forgets the database.
+    pub fn set_left_out(&mut self, profile: &str, database: &str, tables: Vec<String>) {
+        if !tables.is_empty() {
+            self.left_out
+                .entry(profile.to_string())
+                .or_default()
+                .insert(database.to_string(), tables);
+        } else if let Some(databases) = self.left_out.get_mut(profile) {
+            databases.remove(database);
+            if databases.is_empty() {
+                self.left_out.remove(profile);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +159,26 @@ mod tests {
 
         loaded.unset_tool_path("mysql");
         assert_eq!(loaded.tool_path("mysql"), None);
+    }
+
+    #[test]
+    fn left_out_tables_survive_save_and_load() {
+        let config = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.set_left_out("production", "sales", vec!["activity_log".into()]);
+        settings.save(config.path()).unwrap();
+
+        let text = fs::read_to_string(Settings::file(config.path())).unwrap();
+        assert_eq!(text, "[left-out.production]\nsales = [\"activity_log\"]\n");
+
+        let mut loaded = Settings::load(config.path()).unwrap();
+        assert_eq!(loaded.left_out("production", "sales"), ["activity_log"]);
+        assert!(loaded.left_out("production", "other").is_empty());
+        assert!(loaded.left_out("staging", "sales").is_empty());
+
+        // Nothing left out: the entry goes, and the file is empty again.
+        loaded.set_left_out("production", "sales", Vec::new());
+        assert_eq!(loaded, Settings::default());
     }
 
     #[test]
