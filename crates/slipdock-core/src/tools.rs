@@ -130,11 +130,21 @@ pub struct Version {
 }
 
 impl Version {
-    /// The mydumper version Slipdock's options were checked against.
+    /// The mydumper version Slipdock was tested with.
     pub const VERIFIED: Version = Version {
         major: 1,
         minor: 0,
         patch: 19,
+    };
+
+    /// The first release that has every option Slipdock passes. The last one
+    /// to arrive was myloader's `--drop-table <mode>` (0.20.1); before it came
+    /// `--compress ZSTD` (0.15.1) and `--defaults-file` (0.9.3). Checked
+    /// against the option tables in mydumper's source at each release tag.
+    pub const MINIMUM: Version = Version {
+        major: 0,
+        minor: 20,
+        patch: 1,
     };
 
     /// Reads the leading `x.y.z` of a text such as `1.0.19-1`.
@@ -165,18 +175,20 @@ pub struct Working {
 }
 
 impl Working {
-    /// For mydumper/myloader: a note when the version is older than the one
-    /// Slipdock was checked against. Older versions are allowed, not blocked.
+    /// For mydumper/myloader: a note when the version is older than the
+    /// first one with all the options Slipdock uses. Older versions are
+    /// allowed, not blocked: the run will show what the tool rejects.
     pub fn version_warning(&self, tool: Tool) -> Option<String> {
         if tool == Tool::Mysql {
             return None;
         }
         let version = Version::parse(&self.version)?;
-        (version < Version::VERIFIED).then(|| {
+        (version < Version::MINIMUM).then(|| {
             format!(
-                "{tool} {} is older than {}, the version Slipdock was checked against; \
-                 some options may be missing",
+                "{tool} {} is older than {}, the first version with all the options \
+                 Slipdock uses (tested with {})",
                 self.version,
+                Version::MINIMUM,
                 Version::VERIFIED
             )
         })
@@ -217,12 +229,14 @@ impl fmt::Display for Problem {
 /// Runs the candidate and checks that it is a working `tool`.
 pub fn probe(tool: Tool, path: &Path) -> std::result::Result<Working, Problem> {
     let banner = ask(Command::new(path).arg("--version"))?;
-    let first_line = banner.lines().next().unwrap_or("").trim().to_string();
-    let version = match tool {
-        Tool::Mydumper | Tool::Myloader => mydumper_version(&first_line),
-        Tool::Mysql => mysql_version(&first_line),
-    };
+    // The banner is not always the first line: some clients print a notice
+    // before it when started under an old name.
+    let version = banner.lines().find_map(|line| match tool {
+        Tool::Mydumper | Tool::Myloader => mydumper_version(line.trim()),
+        Tool::Mysql => mysql_version(line.trim()),
+    });
     let Some(version) = version else {
+        let first_line = banner.lines().next().unwrap_or("").trim().to_string();
         return Err(Problem::NotTheTool(first_line));
     };
     if tool == Tool::Mysql {
@@ -457,7 +471,8 @@ fn linux_steps(tool: Tool, managers: &[PackageManager]) -> Vec<String> {
                 "Download the package for your distribution from {MYDUMPER_RELEASES}"
             ));
             steps.push(
-                "(the distribution's own mydumper package is usually much older)".to_string(),
+                "(distributions ship mydumper 0.10 or none at all; Slipdock needs 0.20.1 or newer)"
+                    .to_string(),
             );
             if has(PackageManager::Apt) {
                 steps.push(
@@ -693,8 +708,12 @@ esac"#;
         assert!(
             old.version_warning(Tool::Mydumper)
                 .unwrap()
-                .contains("older than 1.0.19")
+                .contains("older than 0.20.1")
         );
+        let enough = Working {
+            version: "0.20.1-1".into(),
+        };
+        assert_eq!(enough.version_warning(Tool::Myloader), None);
         let current = Working {
             version: "1.0.19-1".into(),
         };

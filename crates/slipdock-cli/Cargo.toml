@@ -11,4 +11,10 @@ name = "slipdock"
 path = "src/main.rs"
 
 [dependencies]
+anstream.workspace = true
+anstyle.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+rpassword.workspace = true
+signal-hook.workspace = true
 slipdock-core.workspace = true
