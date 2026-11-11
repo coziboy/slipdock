@@ -1168,3 +1168,73 @@ fn the_logs_of_a_dump_are_shown(cx: &mut TestAppContext) {
         });
     }
 }
+
+/// The arguments of a tool are set in its card, go to the settings file
+/// for that tool only, and text that cannot be used is refused.
+#[gpui_kit::test]
+fn the_arguments_of_a_tool_are_saved_and_used(cx: &mut TestAppContext) {
+    use slipdock_core::tools::Tool;
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    let (tools, dump) = shell.read_with(&cx, |shell, _| (shell.tools.clone(), shell.dump.clone()));
+    let save = |tool: Tool, text: &str, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            tools.update(cx, |view, cx| {
+                let setting = view.settings.iter().find(|s| s.tool == tool).unwrap();
+                setting
+                    .input
+                    .clone()
+                    .update(cx, |input, cx| input.set_value(text, window, cx));
+                view.save_settings(tool, window, cx);
+            })
+        });
+        let (of, ok, text) = tools.read_with(cx, |view, _| view.settings_message.clone().unwrap());
+        assert_eq!(of, tool);
+        (ok, text)
+    };
+    let saved = || {
+        let options = Settings::load(&root.join("config")).unwrap().options;
+        (options.mydumper.arguments, options.myloader.arguments)
+    };
+    assert!(!tools.read_with(&cx, |view, cx| view.settings_changed(Tool::Mydumper, cx)));
+
+    let (ok, text) = save(Tool::Mydumper, "-t 12", &mut cx);
+    assert!(!ok && text.contains("long form"), "{text}");
+    assert_eq!(
+        saved(),
+        (String::new(), String::new()),
+        "nothing is written"
+    );
+
+    let (ok, _) = save(Tool::Mydumper, " --threads 12 --routines ", &mut cx);
+    assert!(ok);
+    assert_eq!(saved().0, "--threads 12 --routines");
+    assert!(!tools.read_with(&cx, |view, cx| view.settings_changed(Tool::Mydumper, cx)));
+    let (ok, _) = save(Tool::Myloader, "--threads 6", &mut cx);
+    assert!(ok);
+    assert_eq!(saved().1, "--threads 6");
+
+    // "Show command" of a dump names the profile and carries mydumper's
+    // arguments, not myloader's.
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.pick_profile("example".into(), window, cx);
+            view.database
+                .update(cx, |input, cx| input.set_value("example_db", window, cx));
+            view.prepare(true, cx);
+        });
+    });
+    cx.run_until_parked();
+    let (_, command) = dump
+        .read_with(&cx, |view, _| view.preview.clone())
+        .unwrap()
+        .unwrap();
+    assert!(command.contains("--threads 12"), "{command}");
+    assert!(command.contains("--routines"), "{command}");
+    assert!(command.contains("profiles/example.cnf"), "{command}");
+
+    // Empty again: nothing is added. The other tool keeps its own.
+    let (ok, _) = save(Tool::Mydumper, "", &mut cx);
+    assert!(ok);
+    assert_eq!(saved(), (String::new(), "--threads 6".to_string()));
+}

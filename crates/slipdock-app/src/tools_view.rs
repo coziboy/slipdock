@@ -7,11 +7,13 @@ use std::time::Duration;
 
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::*;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::exec;
 use slipdock_core::platform;
+use slipdock_core::settings::{self, Settings};
 use slipdock_core::tools::{self, InstallPlan, Status, Tool};
 
 use crate::state::{Core, core};
@@ -20,7 +22,77 @@ use crate::widgets::{self, Tone};
 /// A package install can take a while (downloads, compiling).
 const INSTALL_LIMIT: Duration = Duration::from_secs(30 * 60);
 
+/// One choice among the settings of a tool: a field, and how its text gets
+/// from and to the settings file.
+///
+/// The card of each tool draws the choices that are for it from a list of
+/// these, so a choice of another kind is one more entry in `settings_list`:
+/// the form, "Save" and the unsaved mark need no change.
+pub(crate) struct Setting {
+    /// The tool the choice is for; it is shown in that tool's card.
+    pub(crate) tool: Tool,
+    label: &'static str,
+    /// What the choice does, and what an empty field means.
+    about: String,
+    pub(crate) input: Entity<InputState>,
+    /// The value in the settings, as the text of the field.
+    read: fn(&Settings) -> String,
+    /// Puts the typed text into the settings, or says why it cannot.
+    write: fn(&mut Settings, &str) -> slipdock_core::Result<()>,
+}
+
+/// Every choice, in the order they are shown within their tool.
+///
+/// Each tool has one open field for arguments rather than a field per
+/// option: whatever option the tool knows can be given, and no new option
+/// needs a change here.
+fn settings_list(window: &mut Window, cx: &mut Context<ToolsView>) -> Vec<Setting> {
+    let about = |tool: &str, used_for: &str, example: &str| {
+        format!(
+            "Options for every {used_for}, written as on the command line of {tool}, for \
+             example {example}. Use the long form of an option (--threads, not -t)."
+        )
+    };
+    // Checks the text and keeps it as it was typed.
+    fn checked(text: &str) -> slipdock_core::Result<String> {
+        settings::parse_arguments(text)?;
+        Ok(text.trim().to_string())
+    }
+    let mut field =
+        |example: &'static str| cx.new(|cx| InputState::new(window, cx).placeholder(example));
+    vec![
+        Setting {
+            tool: Tool::Mydumper,
+            label: "Arguments",
+            about: about("mydumper", "dump", "--threads 8 --rows 100000"),
+            input: field("--threads 8"),
+            read: |settings| settings.options.mydumper.arguments.clone(),
+            write: |settings, text| {
+                settings.options.mydumper.arguments = checked(text)?;
+                Ok(())
+            },
+        },
+        Setting {
+            tool: Tool::Myloader,
+            label: "Arguments",
+            about: about("myloader", "load", "--threads 8 --enable-binlog"),
+            input: field("--threads 8"),
+            read: |settings| settings.options.myloader.arguments.clone(),
+            write: |settings, text| {
+                settings.options.myloader.arguments = checked(text)?;
+                Ok(())
+            },
+        },
+    ]
+}
+
 pub struct ToolsView {
+    /// The choices of the tools; each card shows the ones of its tool.
+    pub(crate) settings: Vec<Setting>,
+    /// What "Save" of a tool's settings said: (the tool, it worked, text).
+    pub(crate) settings_message: Option<(Tool, bool, String)>,
+    /// Subscriptions end when they are dropped, so the view keeps them.
+    _subscriptions: Vec<Subscription>,
     /// `None` while the tools are being checked.
     statuses: Option<Vec<Status>>,
     /// The install instructions on show, if "Install…" was pressed.
@@ -30,15 +102,152 @@ pub struct ToolsView {
 }
 
 impl ToolsView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let settings = settings_list(window, cx);
+        // "Save" is on while a field differs from the file, so the section
+        // is drawn again when one changes.
+        let subscriptions = settings
+            .iter()
+            .map(|setting| {
+                cx.subscribe(&setting.input, |_, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                })
+            })
+            .collect();
         let mut view = ToolsView {
+            settings,
+            settings_message: None,
+            _subscriptions: subscriptions,
             statuses: None,
             install: None,
             installing: false,
             message: None,
         };
+        view.show_settings(window, cx);
         view.reload(cx);
         view
+    }
+
+    /// Puts the values of the settings file into the fields.
+    fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let saved = core(cx).settings;
+        for setting in &self.settings {
+            let text = (setting.read)(&saved);
+            setting
+                .input
+                .update(cx, |input, cx| input.set_value(text, window, cx));
+        }
+    }
+
+    /// The choices that are for one tool.
+    fn settings_of(&self, tool: Tool) -> impl Iterator<Item = &Setting> {
+        self.settings
+            .iter()
+            .filter(move |setting| setting.tool == tool)
+    }
+
+    /// Whether a field of this tool differs from the settings file.
+    pub(crate) fn settings_changed(&self, tool: Tool, cx: &App) -> bool {
+        let saved = core(cx).settings;
+        self.settings_of(tool)
+            .any(|setting| setting.input.read(cx).value().trim() != (setting.read)(&saved))
+    }
+
+    /// Writes the fields of one tool to the settings file. One value that
+    /// cannot be used stops the save, so the file never holds half of a form.
+    pub(crate) fn save_settings(
+        &mut self,
+        tool: Tool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut next = core(cx).settings;
+        let checked = self.settings_of(tool).try_for_each(|setting| {
+            let text = setting.input.read(cx).value().to_string();
+            (setting.write)(&mut next, &text)
+        });
+        let result = checked.and_then(|()| {
+            cx.update_global::<Core, _>(|core, _| {
+                next.save(&core.0.config_dir)?;
+                core.0.settings = next;
+                Ok(())
+            })
+        });
+        self.settings_message = Some(match result {
+            Ok(()) => {
+                // The fields show the values as the file holds them. The
+                // fields of the other tools keep what is typed in them.
+                let saved = core(cx).settings;
+                for setting in self.settings_of(tool) {
+                    let text = (setting.read)(&saved);
+                    setting
+                        .input
+                        .update(cx, |input, cx| input.set_value(text, window, cx));
+                }
+                let what = match tool {
+                    Tool::Myloader => "load",
+                    _ => "dump",
+                };
+                (tool, true, format!("Saved. It holds for the next {what}."))
+            }
+            Err(error) => (tool, false, error.to_string()),
+        });
+        cx.notify();
+    }
+
+    /// The settings of a tool, for the end of its card. `None` for a tool
+    /// without settings.
+    fn render_settings(&self, tool: Tool, cx: &mut Context<Self>) -> Option<Div> {
+        self.settings_of(tool).next()?;
+        let changed = self.settings_changed(tool, cx);
+        let mut group = v_flex()
+            .gap_3()
+            .pt_4()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(widgets::subheading("Settings", cx));
+        for setting in self.settings_of(tool) {
+            group = group.child(widgets::field(
+                setting.label,
+                v_flex()
+                    .gap_1()
+                    .child(Input::new(&setting.input))
+                    .child(widgets::hint(setting.about.clone(), cx)),
+                cx,
+            ));
+        }
+        let message = self
+            .settings_message
+            .clone()
+            // "Saved" goes when a field is changed again; a reason for not
+            // saving stays until the next try.
+            .filter(|(of, ok, _)| *of == tool && (!*ok || !changed));
+        Some(
+            group
+                .child(
+                    widgets::wrap_row()
+                        .items_center()
+                        .child(
+                            Button::new((tool.name(), 200usize))
+                                .primary()
+                                .small()
+                                .label("Save")
+                                .disabled(!changed)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.save_settings(tool, window, cx)
+                                })),
+                        )
+                        .when(changed, |this| {
+                            this.child(widgets::hint("Unsaved changes", cx))
+                        }),
+                )
+                .when_some(message, |this, (_, ok, text)| {
+                    let tone = if ok { Tone::Success } else { Tone::Danger };
+                    this.child(widgets::notice(tone, &text, cx))
+                }),
+        )
     }
 
     /// Checks all tools again. Each check starts the tool once, so it runs
@@ -298,7 +507,7 @@ impl ToolsView {
                     .on_click(cx.listener(move |this, _, _, cx| this.set_path(tool, None, cx))),
             );
         }
-        card.child(buttons)
+        card.child(buttons).children(self.render_settings(tool, cx))
     }
 
     fn render_install(&self, tool: Tool, plan: &InstallPlan, cx: &mut Context<Self>) -> Div {

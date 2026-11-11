@@ -14,10 +14,11 @@ use gpui_kit::*;
 use slipdock_core::job::{self, DumpOptions};
 use slipdock_core::report::Line;
 use slipdock_core::server::{self, Table};
+use slipdock_core::tools::Tool;
 use slipdock_core::{Error, platform, profile};
 
 use crate::run_view::RunView;
-use crate::state::{Core, core, log_options};
+use crate::state::{Core, core, log_options, name_the_profile};
 use crate::widgets::{self, Tone};
 
 /// The rows the table list shows at its full height (220 px) before it
@@ -374,8 +375,11 @@ impl DumpView {
         if self.busy {
             return;
         }
-        let ctx = core(cx);
-        let options = self.options(dry_run, cx);
+        let mut ctx = core(cx);
+        let mut options = self.options(dry_run, cx);
+        if dry_run {
+            name_the_profile(&mut ctx, Tool::Mydumper, &mut options.extra_args);
+        }
         self.busy = true;
         // "Show command" keeps the command that is on show until the new
         // one takes its place, so the page does not jump.

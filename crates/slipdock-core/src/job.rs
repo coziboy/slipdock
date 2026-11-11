@@ -22,7 +22,7 @@ use crate::profile::{PasswordStore, Profile};
 use crate::report::{self, Line, Report};
 use crate::run::{self, Outcome, Running};
 use crate::secrets::SecretStore;
-use crate::settings::Settings;
+use crate::settings::{self, Settings};
 use crate::tools::{self, SearchDirs, Tool};
 use crate::{Error, Result, dumps, platform};
 
@@ -113,6 +113,8 @@ impl Defaults {
 pub const TEMPORARY_DEFAULTS_NOTE: &str = "(--defaults-file is a temporary copy of the profile \
      with this run's settings; it exists only while a run lasts)";
 
+/// The defaults file for a query with the mysql client.
+///
 /// - `level`: a `verbose` value for `[mydumper]` and `[myloader]`, this run only.
 /// - `with_secret`: fetch a keychain password. A dry run passes `false`: it
 ///   must not touch the keychain.
@@ -122,8 +124,47 @@ pub fn defaults_for(
     level: Option<u8>,
     with_secret: bool,
 ) -> Result<Defaults> {
+    defaults_with(ctx, profile, level, &[], with_secret)
+}
+
+/// The defaults file for a dump or a load: as [`defaults_for`], with the
+/// choices of the settings that hold for every run (`[options.<tool>]`).
+///
+/// They go into the file, not on the command line: mydumper and myloader
+/// let a value in the defaults file win over the same option given as an
+/// argument, so `--threads` would do nothing for a profile that sets
+/// `threads`. See [`settings::parse_arguments`].
+pub fn run_defaults(
+    ctx: &Context,
+    profile: &Profile,
+    level: Option<u8>,
+    with_secret: bool,
+) -> Result<Defaults> {
+    let options = &ctx.settings.options;
+    let arguments = [
+        (
+            "mydumper",
+            settings::parse_arguments(&options.mydumper.arguments)?,
+        ),
+        (
+            "myloader",
+            settings::parse_arguments(&options.myloader.arguments)?,
+        ),
+    ];
+    defaults_with(ctx, profile, level, &arguments, with_secret)
+}
+
+fn defaults_with(
+    ctx: &Context,
+    profile: &Profile,
+    level: Option<u8>,
+    // The options of the settings, per section of the file.
+    arguments: &[(&str, Vec<(String, String)>)],
+    with_secret: bool,
+) -> Result<Defaults> {
     let keychain = profile.password_store() == PasswordStore::Keychain;
-    if level.is_none() && !keychain {
+    let no_arguments = arguments.iter().all(|(_, pairs)| pairs.is_empty());
+    if level.is_none() && no_arguments && !keychain {
         return Ok(Defaults {
             path: profile.path.clone(),
             _temp: None,
@@ -133,6 +174,12 @@ pub fn defaults_for(
     if let Some(level) = level {
         doc.set("mydumper", "verbose", &level.to_string())?;
         doc.set("myloader", "verbose", &level.to_string())?;
+    }
+    // After the level, so `--verbose` among the arguments has the last word.
+    for (section, pairs) in arguments {
+        for (name, value) in pairs {
+            doc.set(section, name, value)?;
+        }
     }
     if keychain && with_secret {
         let password = ctx.secrets.get(&profile.name)?.ok_or_else(|| {
@@ -168,10 +215,21 @@ pub fn temporary_defaults(doc: &crate::profile::Document) -> Result<Defaults> {
 }
 
 /// Summary rows that explain a temporary defaults file.
-fn defaults_rows(profile: &Profile, level: Option<u8>) -> Vec<Line> {
+fn defaults_rows(
+    profile: &Profile,
+    level: Option<u8>,
+    // The arguments the settings give the tool of this run.
+    arguments: &str,
+) -> Vec<Line> {
     let mut rows = Vec::new();
     if let Some(level) = level {
         rows.push(Line::row("Log level", format!("{level} (this run only)")));
+    }
+    if !arguments.trim().is_empty() {
+        rows.push(Line::row(
+            "Arguments",
+            format!("{} (from the settings)", arguments.trim()),
+        ));
     }
     if profile.password_store() == PasswordStore::Keychain {
         rows.push(Line::row("Password", "from the system keychain"));
@@ -265,7 +323,11 @@ pub fn plan_dump(ctx: &Context, options: DumpOptions, timestamp: &str) -> Result
     if profile.tls_verify_off() {
         summary.push(report::tls_note());
     }
-    summary.extend(defaults_rows(&profile, options.log_level));
+    summary.extend(defaults_rows(
+        &profile,
+        options.log_level,
+        &ctx.settings.options.mydumper.arguments,
+    ));
     summary.push(Line::Blank);
 
     Ok(DumpPlan {
@@ -282,7 +344,7 @@ pub fn plan_dump(ctx: &Context, options: DumpOptions, timestamp: &str) -> Result
 impl DumpPlan {
     pub fn prepare(self, ctx: &Context) -> Result<Prepared> {
         let options = &self.options;
-        let defaults = defaults_for(ctx, &self.profile, options.log_level, !options.dry_run)?;
+        let defaults = run_defaults(ctx, &self.profile, options.log_level, !options.dry_run)?;
         let log = command::beside(&self.out, "log");
         let invocation = command::mydumper(&command::Dump {
             program: &self.program,
@@ -407,7 +469,11 @@ pub fn plan_load(ctx: &Context, options: LoadOptions) -> Result<LoadPlan> {
     if profile.tls_verify_off() {
         summary.push(report::tls_note());
     }
-    summary.extend(defaults_rows(&profile, options.log_level));
+    summary.extend(defaults_rows(
+        &profile,
+        options.log_level,
+        &ctx.settings.options.myloader.arguments,
+    ));
     summary.push(Line::Blank);
 
     Ok(LoadPlan {
@@ -431,7 +497,7 @@ impl LoadPlan {
 
     pub fn prepare(self, ctx: &Context, timestamp: &str) -> Result<Prepared> {
         let options = &self.options;
-        let defaults = defaults_for(ctx, &self.profile, options.log_level, !options.dry_run)?;
+        let defaults = run_defaults(ctx, &self.profile, options.log_level, !options.dry_run)?;
         let log = command::load_log(&self.dir, &self.profile.name, timestamp);
         let invocation = command::myloader(&command::Load {
             program: &self.program,
@@ -797,6 +863,39 @@ dump-dir = ~/dumps
         let args = args(&prepared);
         assert_eq!(&args[2..4], ["--omit-from-file", omit.to_str().unwrap()]);
         assert_eq!(&args[args.len() - 2..], ["--threads", "2"]);
+    }
+
+    #[test]
+    fn arguments_from_the_settings_go_into_a_private_copy_of_the_profile() {
+        let mut s = setup(&PROFILE.replace("[slipdock]", "[mydumper]\nthreads = 4\n\n[slipdock]"));
+        // Nothing set: the profile itself is the defaults file.
+        let prepared = plan_dump(&s.ctx, dump_options(), TS)
+            .unwrap()
+            .prepare(&s.ctx)
+            .unwrap();
+        assert_eq!(PathBuf::from(&args(&prepared)[1]), s.cnf);
+
+        s.ctx.settings.options.mydumper.arguments = "--threads 12 --routines".into();
+        s.ctx.settings.options.myloader.arguments = "--threads=6".into();
+        let plan = plan_dump(&s.ctx, dump_options(), TS).unwrap();
+        let summary = report::plain(&plan.summary);
+        assert!(
+            summary.contains("  Arguments --threads 12 --routines (from the settings)\n"),
+            "{summary}"
+        );
+        let prepared = plan.prepare(&s.ctx).unwrap();
+        let copy = PathBuf::from(&args(&prepared)[1]);
+        assert_ne!(copy, s.cnf);
+        let text = fs::read_to_string(&copy).unwrap();
+        // The profile's own value is replaced, and myloader gets its own.
+        assert!(text.contains("threads = 12"), "{text}");
+        assert!(!text.contains("threads = 4"), "{text}");
+        assert!(text.contains("routines = TRUE"), "{text}");
+        assert!(text.contains("[myloader]\nthreads = 6\n"), "{text}");
+        assert!(
+            fs::read_to_string(&s.cnf).unwrap().contains("threads = 4"),
+            "the profile is untouched"
+        );
     }
 
     #[test]

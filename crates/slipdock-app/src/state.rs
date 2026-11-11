@@ -7,7 +7,8 @@
 //! and the keychain.
 
 use gpui_kit::{App, Global};
-use slipdock_core::job;
+use slipdock_core::tools::Tool;
+use slipdock_core::{job, settings};
 
 /// The log level of every dump and load the app starts: mydumper's and
 /// myloader's most detailed one ("info"). The app has no choice of level:
@@ -28,6 +29,27 @@ pub fn log_options(show_command: bool) -> (Option<u8>, Vec<String>) {
         (true, Some(level)) => (None, vec!["--verbose".into(), level.to_string()]),
         (_, level) => (level, Vec::new()),
     }
+}
+
+/// Makes "Show command" name the profile itself.
+///
+/// The arguments the settings give a tool reach a real run in a temporary
+/// copy of the profile. A command shown for pasting cannot name that copy,
+/// so the arguments are taken out of `ctx` and those of `tool` are put on
+/// the command line instead.
+///
+/// The pasted command is then close to the run, not the same: mydumper and
+/// myloader let a value in the profile win over the same option on the
+/// command line, so an argument counts only where the profile sets nothing.
+pub fn name_the_profile(ctx: &mut job::Context, tool: Tool, extra_args: &mut Vec<String>) {
+    let options = std::mem::take(&mut ctx.settings.options);
+    let arguments = match tool {
+        Tool::Mydumper => options.mydumper.arguments,
+        Tool::Myloader => options.myloader.arguments,
+        Tool::Mysql | Tool::Zstd => String::new(),
+    };
+    // Arguments that cannot be read are left out here; a real run says why.
+    extra_args.extend(settings::split_arguments(&arguments).unwrap_or_default());
 }
 
 pub struct Core(pub job::Context);

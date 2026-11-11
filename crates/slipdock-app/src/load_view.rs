@@ -17,10 +17,11 @@ use gpui_kit::*;
 use slipdock_core::dumps::{self, DumpInfo};
 use slipdock_core::job::{self, LoadOptions, LoadPlan};
 use slipdock_core::report::Line;
+use slipdock_core::tools::Tool;
 use slipdock_core::{Error, profile, server};
 
 use crate::run_view::RunView;
-use crate::state::{core, log_options};
+use crate::state::{core, log_options, name_the_profile};
 use crate::widgets::{self, Tone};
 
 pub struct LoadView {
@@ -266,8 +267,9 @@ impl LoadView {
         if self.busy {
             return;
         }
-        let ctx = core(cx);
-        let options = self.options(true, cx);
+        let mut ctx = core(cx);
+        let mut options = self.options(true, cx);
+        name_the_profile(&mut ctx, Tool::Myloader, &mut options.extra_args);
         // The command that is on show stays until the new one takes its
         // place, so the page does not jump.
         self.busy = true;

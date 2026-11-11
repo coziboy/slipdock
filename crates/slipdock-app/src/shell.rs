@@ -96,7 +96,7 @@ impl Shell {
             load: cx.new(|cx| LoadView::new(window, cx)),
             dumps: cx.new(|cx| DumpsView::new(window, cx)),
             profiles: cx.new(|cx| ProfilesView::new(window, cx)),
-            tools: cx.new(ToolsView::new),
+            tools: cx.new(|cx| ToolsView::new(window, cx)),
             focus,
         }
     }
