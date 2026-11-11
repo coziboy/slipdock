@@ -72,7 +72,7 @@ pub struct Shell {
     screen: Screen,
     pub(crate) dump: Entity<DumpView>,
     pub(crate) load: Entity<LoadView>,
-    dumps: Entity<DumpsView>,
+    pub(crate) dumps: Entity<DumpsView>,
     pub(crate) profiles: Entity<ProfilesView>,
     pub(crate) tools: Entity<ToolsView>,
     /// Lets the window deliver key presses (and so actions) to this view.
@@ -94,7 +94,7 @@ impl Shell {
             screen: first,
             dump: cx.new(|cx| DumpView::new(window, cx)),
             load: cx.new(|cx| LoadView::new(window, cx)),
-            dumps: cx.new(DumpsView::new),
+            dumps: cx.new(|cx| DumpsView::new(window, cx)),
             profiles: cx.new(|cx| ProfilesView::new(window, cx)),
             tools: cx.new(ToolsView::new),
             focus,
