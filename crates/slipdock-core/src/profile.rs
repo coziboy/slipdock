@@ -332,6 +332,15 @@ fn write_new_profile(config_dir: &Path, path: &Path, text: &str) -> Result<()> {
         .map_err(Error::io_at("cannot create", path))
 }
 
+/// Deletes the file of a profile. A password in the keychain and the dumps
+/// taken with the profile are not touched: the caller sees to the first,
+/// and the dumps stay.
+pub fn delete(config_dir: &Path, name: &str) -> Result<()> {
+    check_name(name)?;
+    let path = path_for(config_dir, name);
+    fs::remove_file(&path).map_err(Error::io_at("cannot delete", &path))
+}
+
 /// The starting point for a new profile.
 pub const TEMPLATE: &str = "\
 # No comments at the end of a line: mydumper reads \"VALUE  # note\" as the value.

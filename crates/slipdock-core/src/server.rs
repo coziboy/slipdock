@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::exec::{CaptureError, capture};
 use crate::job::{self, Context};
-use crate::profile::Profile;
+use crate::profile::{PasswordStore, Profile};
 use crate::tools::{self, Tool};
 use crate::{Error, Result, command};
 
@@ -36,9 +36,38 @@ pub fn tables(ctx: &Context, profile: &Profile, database: &str) -> Result<Vec<Ta
     Ok(parse_tables(&output))
 }
 
+/// Connects to the server and returns its version: the connection test.
+///
+/// It uses the values of `profile` as they are in memory, so a front end
+/// can test a form before it is saved. `password` is one that was typed;
+/// without it, the one in the profile or in the keychain is used.
+pub fn version(ctx: &Context, profile: &Profile, password: Option<&str>) -> Result<String> {
+    let mut doc = profile.doc.clone();
+    if let Some(password) = password {
+        doc.set("client", "password", password)?;
+    } else if profile.password_store() == PasswordStore::Keychain {
+        let stored = ctx.secrets.get(&profile.name)?.ok_or_else(|| {
+            Error::msg("the keychain holds no password for this profile; type it and save")
+        })?;
+        doc.set("client", "password", &stored)?;
+    }
+    let defaults = job::temporary_defaults(&doc)?;
+    let output = run_query(ctx, profile, &defaults, "SELECT VERSION()")?;
+    Ok(output.trim().to_string())
+}
+
 fn query(ctx: &Context, profile: &Profile, sql: &str) -> Result<String> {
-    let mysql = tools::resolve(Tool::Mysql, &ctx.settings, &ctx.dirs)?;
     let defaults = job::defaults_for(ctx, profile, None, true)?;
+    run_query(ctx, profile, &defaults, sql)
+}
+
+fn run_query(
+    ctx: &Context,
+    profile: &Profile,
+    defaults: &job::Defaults,
+    sql: &str,
+) -> Result<String> {
+    let mysql = tools::resolve(Tool::Mysql, &ctx.settings, &ctx.dirs)?;
     let invocation = command::mysql_query(&mysql, defaults.path(), sql, profile.tls_verify_off());
     match capture(&mut invocation.to_command(), QUERY_LIMIT) {
         Ok(output) if output.success() => Ok(output.stdout),
@@ -133,6 +162,7 @@ cat "$file" > "{record}.cnf"
 case "$5" in
   "SHOW DATABASES") printf 'information_schema\nexample_db\n' ;;
   SHOW\ FULL*) printf 'users\tBASE TABLE\nreport\tVIEW\n' ;;
+  "SELECT VERSION()") printf '8.0.36\n' ;;
   *) echo "ERROR 1045 (28000): Access denied" >&2; exit 1 ;;
 esac"#,
             record = record.display()
@@ -167,6 +197,38 @@ esac"#,
         // The keychain password reached the client through the private copy.
         let cnf = fs::read_to_string(temp.path().join("record.cnf")).unwrap();
         assert!(cnf.contains("password = from-keychain"));
+    }
+
+    #[test]
+    fn the_connection_test_uses_the_values_in_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let (ctx, secrets) = context(temp.path());
+        let record = temp.path().join("record");
+        fake_mysql(&ctx.dirs.path[0], &record);
+        write_profile(&ctx, "example", "[client]\nhost = saved.example.test\n");
+        let mut profile = ctx.profile("example").unwrap();
+        // As a form does before "Save": changed, but not written.
+        profile
+            .doc
+            .set("client", "host", "typed.example.test")
+            .unwrap();
+
+        assert_eq!(version(&ctx, &profile, Some("typed")).unwrap(), "8.0.36");
+        let cnf = fs::read_to_string(temp.path().join("record.cnf")).unwrap();
+        assert!(cnf.contains("host = typed.example.test"), "{cnf}");
+        assert!(cnf.contains("password = typed"), "{cnf}");
+
+        // Without a typed password, a keychain profile uses the stored one.
+        profile
+            .doc
+            .set("slipdock", "password-store", "keychain")
+            .unwrap();
+        let error = version(&ctx, &profile, None).unwrap_err().to_string();
+        assert!(error.contains("keychain holds no password"), "{error}");
+        secrets.set("example", "from-keychain").unwrap();
+        version(&ctx, &profile, None).unwrap();
+        let cnf = fs::read_to_string(temp.path().join("record.cnf")).unwrap();
+        assert!(cnf.contains("password = from-keychain"), "{cnf}");
     }
 
     #[test]

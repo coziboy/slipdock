@@ -144,6 +144,11 @@ pub fn defaults_for(
         })?;
         doc.set("client", "password", &password)?;
     }
+    temporary_defaults(&doc)
+}
+
+/// Writes a defaults file that exists only until the value is dropped.
+pub fn temporary_defaults(doc: &crate::profile::Document) -> Result<Defaults> {
     let temp_error = |source| Error::Io {
         context: "cannot write the temporary defaults file".into(),
         source,
