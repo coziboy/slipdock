@@ -52,7 +52,6 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Some(Command::Init { profile }) => commands::init(&ctx, &profile),
         Some(Command::Profiles) => commands::profiles(&ctx),
-        Some(Command::Import { from }) => commands::import(&ctx, from),
         Some(Command::Dump {
             profile,
             db,

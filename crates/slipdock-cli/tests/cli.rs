@@ -195,35 +195,6 @@ fn config_dir_option_wins_over_the_environment() {
 }
 
 #[test]
-fn import_copies_from_a_mydb_folder() {
-    let sandbox = Sandbox::new();
-    let mydb = sandbox.root.join(".config/mydb");
-    fs::create_dir_all(&mydb).unwrap();
-    fs::write(
-        mydb.join("old.cnf"),
-        "[client]\nhost = h\nuser = u\nport = 1\n[mydb]\ndump-dir = /d\n",
-    )
-    .unwrap();
-    fs::write(mydb.join("example.cnf"), "[client]\n").unwrap();
-    fs::write(mydb.join("old.cnf.bak"), "x").unwrap();
-
-    // Without --from it reads ~/.config/mydb.
-    let out = stdout(sandbox.slipdock().arg("import"));
-    assert!(out.contains("imported  old\n"), "{out}");
-    assert!(
-        out.contains("skipped   example  (already exists in Slipdock)\n"),
-        "{out}"
-    );
-    let imported = fs::read_to_string(sandbox.config().join("profiles/old.cnf")).unwrap();
-    assert!(imported.contains("[slipdock]\ndump-dir = /d"));
-    assert!(
-        fs::read_to_string(mydb.join("old.cnf"))
-            .unwrap()
-            .contains("[mydb]")
-    );
-}
-
-#[test]
 fn dump_dry_run_shows_summary_and_command_and_runs_nothing() {
     let sandbox = Sandbox::new();
     // If the fake were started for the dump, it would leave this file.

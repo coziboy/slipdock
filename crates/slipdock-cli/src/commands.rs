@@ -48,35 +48,6 @@ pub fn profiles(ctx: &Context) -> Result<i32> {
     Ok(OK)
 }
 
-pub fn import(ctx: &Context, from: Option<PathBuf>) -> Result<i32> {
-    let from = match (from, &ctx.home) {
-        (Some(from), _) => from,
-        (None, Some(home)) => profile::mydb_dir(home),
-        (None, None) => {
-            return Err(Error::msg(
-                "cannot find your home folder; pass --from <dir>",
-            ));
-        }
-    };
-    let report = profile::import(&from, &ctx.config_dir)?;
-    for name in &report.imported {
-        println!("imported  {name}");
-    }
-    for name in &report.skipped {
-        println!("skipped   {name}  (already exists in Slipdock)");
-    }
-    if report.imported.is_empty() && report.skipped.is_empty() {
-        println!("No *.cnf files in {}", from.display());
-    } else {
-        println!(
-            "Profiles are in {}. The files in {} were not changed.",
-            profile::profiles_dir(&ctx.config_dir).display(),
-            from.display()
-        );
-    }
-    Ok(OK)
-}
-
 // --- Dump and load -------------------------------------------------------------------
 
 pub struct DumpArgs {

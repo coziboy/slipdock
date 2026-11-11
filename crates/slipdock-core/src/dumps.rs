@@ -2,8 +2,7 @@
 //!
 //! A dump is a folder written by mydumper. Slipdock keeps no index of them:
 //! everything shown (complete or not, tables, size, source database) is read
-//! from the folder each time. Dumps made by the old `mydb` script look the
-//! same and are listed like any other.
+//! from the folder each time.
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -1,4 +1,4 @@
-//! Profiles: list, create, import, and a form for the common keys.
+//! Profiles: list, create, and a form for the common keys.
 //!
 //! The form edits only the keys it shows. Everything else in the file
 //! (comments, tuning options) is left exactly as it is, because saving goes
@@ -104,26 +104,6 @@ impl ProfilesView {
             Err(error) => self.message = Some((false, error.to_string())),
         }
         cx.notify();
-    }
-
-    fn import(&mut self, cx: &mut Context<Self>) {
-        let ctx = core(cx);
-        let result = match &ctx.home {
-            Some(home) => profile::import(&profile::mydb_dir(home), &ctx.config_dir),
-            None => Err(Error::msg("cannot find your home folder")),
-        };
-        self.message = Some(match result {
-            Ok(report) => (
-                true,
-                format!(
-                    "Imported: {}. Already here, left alone: {}.",
-                    list_or_none(&report.imported),
-                    list_or_none(&report.skipped)
-                ),
-            ),
-            Err(error) => (false, error.to_string()),
-        });
-        self.reload(cx);
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
@@ -258,14 +238,6 @@ impl ProfilesView {
     }
 }
 
-fn list_or_none(names: &[String]) -> String {
-    if names.is_empty() {
-        "none".to_string()
-    } else {
-        names.join(", ")
-    }
-}
-
 impl Render for ProfilesView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = v_flex().gap_2().min_w_0();
@@ -307,13 +279,6 @@ impl Render for ProfilesView {
                         .label("New")
                         .on_click(cx.listener(|this, _, window, cx| this.create(window, cx))),
                 ),
-        )
-        .child(
-            Button::new("import-mydb")
-                .outline()
-                .label("Import from mydb")
-                .tooltip("Copies ~/.config/mydb/*.cnf. Existing profiles and the originals are not changed.")
-                .on_click(cx.listener(|this, _, _, cx| this.import(cx))),
         );
 
         let selected = self

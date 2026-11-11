@@ -70,7 +70,6 @@ a dry run.
 slipdock                                   guided mode on a terminal, help otherwise
 slipdock init <profile>
 slipdock profiles
-slipdock import [--from DIR]
 slipdock dump <profile> <db> [-x, --exclude t1,t2]... [--out DIR] [--log-level 0-3] [-- mydumper args]
 slipdock load <profile> <dump-dir> [target-db] [--log-level 0-3] [--confirm NAME] [-- myloader args]
 slipdock dumps [profile]
@@ -126,12 +125,6 @@ Config folder: `$SLIPDOCK_CONFIG_DIR`, else `$XDG_CONFIG_HOME/slipdock`, else
 A dump is a folder `<db>__<profile>__<YYYYmmdd-HHMMSS>` in the dump folder.
 Beside it: `<name>.log`, and `<name>.omit` when tables were excluded. Each
 load writes `<name>__load_<profile>_<time>.log`.
-
-### Coming from mydb
-
-`slipdock import` copies `~/.config/mydb/*.cnf` into Slipdock and renames
-`[mydb]` to `[slipdock]`. It never overwrites a Slipdock profile and never
-changes the originals. Dumps made by `mydb` are listed and loaded as they are.
 
 ### Passwords
 

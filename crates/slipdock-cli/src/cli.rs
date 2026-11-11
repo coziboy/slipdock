@@ -55,13 +55,6 @@ pub enum Command {
     /// List profiles
     Profiles,
 
-    /// Copy profiles from the mydb script (never overwrites, never changes the originals)
-    Import {
-        /// The folder to read *.cnf files from [default: ~/.config/mydb]
-        #[arg(long, value_name = "DIR")]
-        from: Option<PathBuf>,
-    },
-
     /// Dump a database into a new folder <db>__<profile>__<time>
     Dump {
         #[arg(add = profile_names())]

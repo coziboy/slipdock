@@ -88,27 +88,6 @@ impl Document {
         }
     }
 
-    /// Renames every `[from]` header to `[to]`. Returns whether one was found.
-    pub fn rename_section(&mut self, from: &str, to: &str) -> bool {
-        let mut found = false;
-        for line in &mut self.lines {
-            if section_name(line) == Some(from) {
-                *line = format!("[{to}]");
-                found = true;
-            }
-        }
-        found
-    }
-
-    /// Replaces a whole line that equals `from` exactly.
-    fn replace_line(&mut self, from: &str, to: &str) {
-        for line in &mut self.lines {
-            if line == from {
-                *line = to.to_string();
-            }
-        }
-    }
-
     /// Line numbers of a section: (header line, one past its last line).
     fn section_range(&self, section: &str) -> Option<(usize, usize)> {
         let start = self
@@ -353,53 +332,6 @@ fn write_new_profile(config_dir: &Path, path: &Path, text: &str) -> Result<()> {
         .map_err(Error::io_at("cannot create", path))
 }
 
-// --- Import from mydb -------------------------------------------------------------
-
-/// Where the `mydb` shell script keeps its profiles.
-pub fn mydb_dir(home: &Path) -> PathBuf {
-    home.join(".config/mydb")
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct ImportReport {
-    pub imported: Vec<String>,
-    /// Profiles that already exist in Slipdock and were left alone.
-    pub skipped: Vec<String>,
-}
-
-/// Copies `*.cnf` from a mydb folder into Slipdock, renaming `[mydb]` to
-/// `[slipdock]`. Existing Slipdock profiles are never overwritten, and the
-/// files in `from` are only read.
-pub fn import(from: &Path, config_dir: &Path) -> Result<ImportReport> {
-    if !from.is_dir() {
-        return Err(Error::msg(format!(
-            "nothing to import: {} is not a folder",
-            from.display()
-        )));
-    }
-    let mut stems = cnf_stems(from);
-    stems.sort();
-    let mut report = ImportReport::default();
-    for name in stems {
-        let target = path_for(config_dir, &name);
-        if check_name(&name).is_err() || target.exists() {
-            report.skipped.push(name);
-            continue;
-        }
-        let source = from.join(format!("{name}.cnf"));
-        let text = fs::read_to_string(&source).map_err(Error::io_at("cannot read", &source))?;
-        let mut doc = Document::parse(&text);
-        doc.rename_section("mydb", SECTION);
-        doc.replace_line(
-            "# Read only by mydb, ignored by mydumper/myloader/mysql.",
-            "# Read only by Slipdock, ignored by mydumper/myloader/mysql.",
-        );
-        write_new_profile(config_dir, &target, &doc.to_text())?;
-        report.imported.push(name);
-    }
-    Ok(report)
-}
-
 /// The starting point for a new profile.
 pub const TEMPLATE: &str = "\
 # No comments at the end of a line: mydumper reads \"VALUE  # note\" as the value.
@@ -545,9 +477,8 @@ dump-dir = ~/dumps
     }
 
     #[test]
-    fn remove_and_rename_section() {
-        let mut doc = Document::parse("[mydb]\ndump-dir = /d\ntls-verify = FALSE\n");
-        assert!(doc.rename_section("mydb", "slipdock"));
+    fn remove_a_key() {
+        let mut doc = Document::parse("[slipdock]\ndump-dir = /d\ntls-verify = FALSE\n");
         assert!(doc.remove("slipdock", "tls-verify"));
         assert!(!doc.remove("slipdock", "tls-verify"));
         assert_eq!(doc.to_text(), "[slipdock]\ndump-dir = /d\n");
@@ -599,7 +530,6 @@ dump-dir = ~/dumps
         let error = profile.need_dump_dir(None).unwrap_err().to_string();
         assert!(error.contains("dump-dir = /path/to/folder"));
         assert!(error.contains("--out"));
-        assert!(!TEMPLATE.contains("mydb"));
     }
 
     #[test]
@@ -634,43 +564,5 @@ dump-dir = ~/dumps
             .to_string();
         assert!(error.contains("no profile 'nope'"));
         assert!(error.contains("slipdock init nope"));
-    }
-
-    #[test]
-    fn import_copies_cnf_files_renames_the_section_and_never_overwrites() {
-        let mydb = tempfile::tempdir().unwrap();
-        let config = tempfile::tempdir().unwrap();
-        let original = "[client]\nhost = h\n\n# Read only by mydb, ignored by mydumper/myloader/mysql.\n[mydb]\ndump-dir = /d\n";
-        fs::write(mydb.path().join("alpha.cnf"), original).unwrap();
-        fs::write(mydb.path().join("beta.cnf"), original).unwrap();
-        fs::write(mydb.path().join("alpha.cnf.bak"), "backup").unwrap();
-        fs::write(mydb.path().join("notes.txt"), "notes").unwrap();
-        init(config.path(), "beta").unwrap();
-
-        let report = import(mydb.path(), config.path()).unwrap();
-
-        assert_eq!(report.imported, ["alpha"]);
-        assert_eq!(report.skipped, ["beta"]);
-        assert_eq!(names(config.path()), ["alpha", "beta"]);
-        let imported = fs::read_to_string(path_for(config.path(), "alpha")).unwrap();
-        assert_eq!(
-            imported,
-            "[client]\nhost = h\n\n# Read only by Slipdock, ignored by mydumper/myloader/mysql.\n[slipdock]\ndump-dir = /d\n"
-        );
-        // The existing profile and the originals are untouched.
-        assert_eq!(
-            fs::read_to_string(path_for(config.path(), "beta")).unwrap(),
-            TEMPLATE
-        );
-        assert_eq!(
-            fs::read_to_string(mydb.path().join("alpha.cnf")).unwrap(),
-            original
-        );
-    }
-
-    #[test]
-    fn import_from_a_missing_folder_is_an_error() {
-        let config = tempfile::tempdir().unwrap();
-        assert!(import(Path::new("/does/not/exist"), config.path()).is_err());
     }
 }
