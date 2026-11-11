@@ -17,11 +17,16 @@
 //!   fits moves to the next line and fills it. `field` uses this to put the
 //!   control under its label in a narrow window.
 
+use std::path::Path;
+
 use gpui_kit::component::button::*;
+use gpui_kit::component::clipboard::Clipboard;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use slipdock_core::dumps::{self, DumpInfo};
 use slipdock_core::job;
 use slipdock_core::report::Line;
 
@@ -51,6 +56,26 @@ pub fn hint(text: impl Into<SharedString>, cx: &App) -> Div {
         .text_sm()
         .text_color(cx.theme().muted_foreground)
         .child(text.into())
+}
+
+/// A folder as the forms show it and as it is written in a profile: the home folder shortened to `~`,
+/// nothing escaped (the core expands `~` again and reads the rest as it is).
+pub fn tilde_path(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.to_string_lossy()),
+        None => path.to_string_lossy().into_owned(),
+    }
+}
+
+/// A spinner with a line about what is being fetched or prepared. Shown
+/// while work runs in the background.
+pub fn loading(text: impl Into<SharedString>, cx: &App) -> Div {
+    h_flex()
+        .gap_2()
+        .min_w_0()
+        .child(Spinner::new().small())
+        .child(hint(text, cx).flex_1())
 }
 
 /// A form row: a fixed-width label, then the control. When the window is
@@ -112,13 +137,16 @@ pub fn card(cx: &App) -> Div {
 
 /// A card with a small title.
 pub fn section(title: impl Into<SharedString>, cx: &App) -> Div {
-    card(cx).child(
-        div()
-            .text_xs()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(cx.theme().muted_foreground)
-            .child(title.into().to_uppercase()),
-    )
+    card(cx).child(subheading(title, cx))
+}
+
+/// The small title of a group of fields.
+pub fn subheading(title: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(cx.theme().muted_foreground)
+        .child(title.into().to_uppercase())
 }
 
 /// A row in a list that can be clicked as a whole (a dump, a profile). Its
@@ -168,6 +196,168 @@ pub fn option_mark(chosen: bool, cx: &App) -> Div {
         .when(chosen, |this| this.border_4())
 }
 
+/// The rows `database_list` draws at most. A server can have thousands of
+/// databases; the name field narrows the list down.
+pub const DATABASE_ROWS: usize = 50;
+
+/// The databases of `databases` that a typed name lets through, in order:
+/// those that contain it, without regard to case. An empty name lets all
+/// through.
+pub fn matching_databases<'a>(databases: &'a [String], typed: &str) -> Vec<&'a String> {
+    let typed = typed.trim().to_lowercase();
+    databases
+        .iter()
+        .filter(|name| typed.is_empty() || name.to_lowercase().contains(&typed))
+        .collect()
+}
+
+/// The list under a database name field: the databases of the server that
+/// match what is typed, one per row, in a box that scrolls on its own. A
+/// click on a row calls what `on_pick` made for its name.
+///
+/// Nothing is drawn when the server listed no databases. Once the typed
+/// name is one of the databases, the list gives way to one line that says
+/// so: the choice is made, and clearing the field brings the list back.
+pub fn database_list(
+    id: &'static str,
+    databases: &[String],
+    typed: &str,
+    on_pick: impl Fn(String) -> Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
+    cx: &App,
+) -> Option<Div> {
+    if databases.is_empty() {
+        return None;
+    }
+    let theme = cx.theme();
+    let typed = typed.trim();
+    if databases.iter().any(|name| name == typed) {
+        return Some(
+            h_flex()
+                .gap_1p5()
+                .min_w_0()
+                .child(
+                    Icon::new(IconName::CircleCheck)
+                        .small()
+                        .text_color(theme.success),
+                )
+                .child(hint("A database on this server.", cx).flex_1()),
+        );
+    }
+    let matching = matching_databases(databases, typed);
+    let count = if typed.is_empty() {
+        format!("{} databases on this server", databases.len())
+    } else {
+        format!("{} of {} databases match", matching.len(), databases.len())
+    };
+    if matching.is_empty() {
+        return Some(hint(count, cx));
+    }
+    let hover = theme.accent;
+    let mut rows = v_flex();
+    for (index, name) in matching.iter().take(DATABASE_ROWS).enumerate() {
+        rows = rows.child(
+            div()
+                .id((id, index))
+                .role(Role::Button)
+                .aria_label((*name).clone())
+                .px_2()
+                .py_1()
+                .min_w_0()
+                .rounded_sm()
+                .text_sm()
+                .cursor_pointer()
+                .hover(move |style| style.bg(hover))
+                .child((*name).clone())
+                .on_click(on_pick((*name).clone())),
+        );
+    }
+    if matching.len() > DATABASE_ROWS {
+        rows = rows.child(
+            hint(
+                format!(
+                    "and {} more: type a part of the name to narrow the list",
+                    matching.len() - DATABASE_ROWS
+                ),
+                cx,
+            )
+            .px_2()
+            .py_1(),
+        );
+    }
+    Some(
+        v_flex().gap_1().min_w_0().child(hint(count, cx)).child(
+            div()
+                .id(id)
+                .max_h(px(180.))
+                .overflow_y_scroll()
+                // Only a list long enough to scroll keeps the scroll from
+                // the page behind it.
+                .when(matching.len() > 6, |this| this.occlude())
+                .p_1()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.border)
+                .child(rows),
+        ),
+    )
+}
+
+/// A dump as every list shows it: an icon, when it was taken, and its
+/// folder name. The caller puts its own controls around it (a checkbox and
+/// buttons on the Dumps screen, the mark of a choice on the Load screen).
+pub fn dump_summary(dump: &DumpInfo, cx: &App) -> Div {
+    let theme = cx.theme();
+    // The date in the name is what tells dumps apart, so it is the title
+    // and the folder name goes under it. A folder named by hand has no
+    // date: its name is the title.
+    let (title, folder) = match dumps::taken(&dump.name) {
+        Some(taken) => (taken, Some(dump.name.clone())),
+        None => (dump.name.clone(), None),
+    };
+    let tile_color = if dump.complete {
+        theme.muted_foreground
+    } else {
+        theme.warning
+    };
+    h_flex()
+        .gap_3()
+        .min_w_0()
+        .child(
+            h_flex()
+                .size(px(36.))
+                .flex_shrink_0()
+                .justify_center()
+                .rounded_md()
+                .bg(tile_color.opacity(0.12))
+                .child(Icon::new(gpui_kit::assets::IconName::Database).text_color(tile_color)),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    wrap_row()
+                        .items_center()
+                        .child(div().min_w_0().font_weight(FontWeight::MEDIUM).child(title))
+                        .when(!dump.complete, |this| {
+                            this.child(tag("partial", Tone::Warning))
+                        }),
+                )
+                .when_some(folder, |this, folder| {
+                    this.child(hint(folder, cx).text_xs())
+                }),
+        )
+}
+
+/// What a dump holds: `65 tables · 15M`.
+pub fn dump_stats(dump: &DumpInfo, cx: &App) -> Div {
+    hint(
+        format!("{} tables · {}", dump.tables, dumps::human_size(dump.size)),
+        cx,
+    )
+    .flex_shrink_0()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Success,
@@ -185,6 +375,24 @@ pub fn tag(text: impl Into<SharedString>, tone: Tone) -> Tag {
         Tone::Info => Tag::secondary(),
     };
     tag.outline().small().child(text.into())
+}
+
+/// Shown in place of the rest of a form when the server of the chosen
+/// profile did not answer: the reason and "Try again". The caller gives the
+/// button its action.
+pub fn connection_failed(profile: &str, error: &str, retry: Button, cx: &App) -> Div {
+    section("Connection failed", cx)
+        .child(error_text(
+            format!("Could not connect with {profile}.\n{error}"),
+            cx,
+        ))
+        .child(hint(
+            "Check the host, the user and the password on the Profiles screen \
+             (\"Test connection\"), and that the server can be reached from here, \
+             for example through a VPN.",
+            cx,
+        ))
+        .child(wrap_row().child(retry.icon(IconName::RefreshCw).label("Try again")))
 }
 
 /// A message in a tinted box, with an icon for its tone.
@@ -245,9 +453,23 @@ pub fn mono(text: &str, cx: &App) -> Div {
     block
 }
 
-/// What a dry run shows: the summary, the command, and that nothing ran.
+/// What "Show command" shows: the summary, the command with a button that
+/// copies it, and that nothing ran.
 pub fn preview(summary: &[Line], command: &str, cx: &App) -> Div {
-    section("Dry run", cx)
+    card(cx)
+        .child(
+            // The title, with the copy button at the end of its line.
+            h_flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(subheading("Command", cx))
+                .child(
+                    Clipboard::new("copy-command")
+                        .value(command.trim().to_string())
+                        .tooltip("Copy the command"),
+                ),
+        )
         .child(lines(summary, cx))
         .child(mono(command, cx))
         .when(command.contains("slipdock-"), |this| {
@@ -282,6 +504,12 @@ pub fn lines(lines: &[Line], cx: &App) -> Div {
     };
     let mut column = v_flex().gap_1().min_w_0();
     for line in lines {
+        // The core says which log level a run was given. The app gives
+        // every run the same one (`state::LOG_LEVEL`) and offers no choice,
+        // so the row would only be noise here.
+        if matches!(line, Line::Row { label, .. } if label == "Log level") {
+            continue;
+        }
         let row = match line {
             Line::Title(text) => div().font_weight(FontWeight::SEMIBOLD).child(text.clone()),
             Line::Row {

@@ -42,6 +42,29 @@ actions!(
     [Quit, ShowDump, ShowLoad, ShowDumps, ShowProfiles, ShowTools]
 );
 
+// gpui-kit's own `Assets` holds only the icons its components draw. An icon
+// from the full Lucide set (`gpui_kit::assets::IconName`) is drawn as an
+// empty space unless its file is in the app, so each one used is named here.
+gpui_kit::assets::icon_assets!(ExtraIcons, [Database, FileText, Trash]);
+
+/// The icons of the components, plus the extra ones above.
+pub(crate) struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        match ExtraIcons.load(path)? {
+            Some(bytes) => Ok(Some(bytes)),
+            None => gpui_kit::assets::Assets.load(path),
+        }
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut paths = gpui_kit::assets::Assets.list(path)?;
+        paths.extend(ExtraIcons.list(path)?);
+        Ok(paths)
+    }
+}
+
 fn main() {
     // The same context the command line tool builds: config folder (honours
     // SLIPDOCK_CONFIG_DIR), settings, tool search folders, keychain.
@@ -55,8 +78,8 @@ fn main() {
 
     // `run` starts the event loop and calls the closure once it is ready.
     // `cx` is the `App`: the owner of all state, windows and entities.
-    // The assets are the icons the components draw (check marks, spinners).
-    let application = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+    // The assets are the icons that are drawn (check marks, spinners).
+    let application = gpui_kit::application().with_assets(AppAssets);
     application.run(move |cx| {
         gpui_kit::init(cx);
         cx.set_global(Core(context));

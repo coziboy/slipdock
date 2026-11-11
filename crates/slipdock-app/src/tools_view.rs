@@ -373,7 +373,7 @@ impl Render for ToolsView {
         );
 
         match &self.statuses {
-            None => page = page.child(widgets::hint("Checking…", cx)),
+            None => page = page.child(widgets::loading("Checking the tools…", cx)),
             Some(statuses) => {
                 for status in statuses {
                     page = page.child(self.render_tool(status, cx));
