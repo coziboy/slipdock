@@ -13,6 +13,7 @@ use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext, WindowOptions};
 use slipdock_core::job::Context;
 use slipdock_core::secrets::MemoryStore;
+use slipdock_core::server::Table;
 use slipdock_core::settings::Settings;
 use slipdock_core::tools::SearchDirs;
 
@@ -42,7 +43,7 @@ fn fake_tool(bin: &Path, name: &str, body: &str) {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// A sandbox with one profile, fake mydumper/myloader (no mysql) and one
+/// A sandbox with one profile, fake mydumper/myloader/mysql and one
 /// complete dump of `example_db`.
 fn sandbox(root: &Path) -> Context {
     let dumps = root.join("dumps");
@@ -63,6 +64,18 @@ fn sandbox(root: &Path) -> Context {
     )
     .unwrap();
     fake_tool(&root.join("bin"), "mydumper", "exit 1");
+    // A mysql client whose server answers with one database and no tables.
+    let mysql = root.join("bin/mysql");
+    let script = r#"#!/bin/sh
+case "$1" in
+  --defaults-file=*) file="${1#--defaults-file=}" ;;
+  *) echo "mysql  Ver 9.7.1 for example on arm64"; exit 0 ;;
+esac
+if [ "$2" = --print-defaults ]; then sed -n 's/^user=/--user=/p' "$file"; exit 0; fi
+case "$5" in "SHOW DATABASES") echo example_db ;; esac
+"#;
+    fs::write(&mysql, script).unwrap();
+    fs::set_permissions(&mysql, fs::Permissions::from_mode(0o755)).unwrap();
     fake_tool(
         &root.join("bin"),
         "myloader",
@@ -128,10 +141,91 @@ fn dry_run_dump_shows_the_command(cx: &mut TestAppContext) {
         "{command}"
     );
     assert!(command.contains("--database example_db"), "{command}");
+    // The shown command can be pasted and run later: it names the profile
+    // itself, not a temporary copy, and carries the log level as an option.
+    let profile = root.join("config/profiles/example.cnf");
+    assert!(
+        command.contains(&format!("--defaults-file {}", profile.display())),
+        "{command}"
+    );
+    assert!(command.contains("--verbose 3"), "{command}");
     assert!(
         dump.read_with(&cx, |view, _| view.run.is_none()),
         "a dry run starts nothing"
     );
+}
+
+fn tables(names: &[&str]) -> Vec<(Table, bool)> {
+    names
+        .iter()
+        .map(|name| {
+            let table = Table {
+                name: name.to_string(),
+                is_view: false,
+            };
+            (table, true)
+        })
+        .collect()
+}
+
+/// The selected tables are dumped: the unticked ones are what mydumper is
+/// told to leave out. "Select none" and "Select all" act on the rows the
+/// filter shows.
+#[gpui_kit::test]
+fn unselected_tables_are_left_out(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    let dump: Entity<DumpView> = shell.read_with(&cx, |shell, _| shell.dump.clone());
+    let excluded =
+        |cx: &VisualTestContext| dump.read_with(cx, |view, cx| view.options(true, cx).exclude);
+
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.pick_profile("example".into(), window, cx);
+            view.database
+                .update(cx, |input, cx| input.set_value("example_db", window, cx));
+            view.tables = tables(&["account_plans", "accounts", "users"]);
+        });
+    });
+    assert!(excluded(&cx).is_empty(), "everything is selected at first");
+
+    // With a filter, "none" unticks only the rows that match it.
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.filter
+                .update(cx, |input, cx| input.set_value("ACCOUNT", window, cx));
+            view.set_shown(false, cx);
+        });
+    });
+    assert_eq!(excluded(&cx), ["account_plans", "accounts"]);
+
+    // Without a filter, it unticks all, and a dump of nothing is refused.
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.filter
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            view.set_shown(false, cx);
+            view.prepare(true, cx);
+        });
+    });
+    cx.run_until_parked();
+    let refused = dump.read_with(&cx, |view, _| view.preview.clone()).unwrap();
+    assert_eq!(refused.unwrap_err(), "Select at least one table to dump.");
+
+    // One ticked table: the others reach the command as the omit file.
+    cx.update(|_, cx| {
+        dump.update(cx, |view, cx| {
+            view.tables[2].1 = true;
+            view.prepare(true, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(excluded(&cx), ["account_plans", "accounts"]);
+    let (_, command) = dump
+        .read_with(&cx, |view, _| view.preview.clone())
+        .unwrap()
+        .unwrap();
+    assert!(command.contains("--omit-from-file"), "{command}");
 }
 
 #[gpui_kit::test]
@@ -159,6 +253,14 @@ fn dry_run_load_then_a_confirmed_load(cx: &mut TestAppContext) {
         .unwrap();
     assert!(command.contains("--drop-table DROP"), "{command}");
     assert!(command.contains("--database example_db"), "{command}");
+    // The shown command can be pasted and run later: it names the profile
+    // itself, not a temporary copy, and carries the log level as an option.
+    let profile = root.join("config/profiles/example.cnf");
+    assert!(
+        command.contains(&format!("--defaults-file {}", profile.display())),
+        "{command}"
+    );
+    assert!(command.contains("--verbose 3"), "{command}");
 
     // Real load: the dialog opens and waits for the name.
     cx.update(|window, cx| load.update(cx, |view, cx| view.request_load(window, cx)));
@@ -255,6 +357,11 @@ fn fill_every_screen(shell: &Entity<Shell>, cx: &mut VisualTestContext) {
             view.pick_profile("example".into(), window, cx);
             view.database
                 .update(cx, |input, cx| input.set_value("example_db", window, cx));
+            // A long name, so the table selector is checked too.
+            view.tables = tables(&[
+                "customer_reporting_warehouse_monthly_account_segment_histories_archive",
+                "users",
+            ]);
             view.prepare(true, cx);
         });
         load.update(cx, |view, cx| view.pick_profile("example".into(), cx));
@@ -350,7 +457,7 @@ fn report_install_and_dialog_fit_the_smallest_window(cx: &mut TestAppContext) {
         assert_inside(window, width, "run report");
     });
 
-    // The sandbox has no mysql, so its install instructions can be shown.
+    // The install instructions of a tool can be shown whether it is there or not.
     cx.update(|_, cx| {
         shell.update(cx, |shell, cx| shell.show(Screen::Tools, cx));
         tools.update(cx, |view, cx| {
@@ -396,7 +503,7 @@ fn a_wide_window_centres_the_page(cx: &mut TestAppContext) {
     cx.update(|window, cx| {
         window.render_frame(cx);
         let button = window.find_by_label("Run dump").bounds();
-        let input = window.find_by_label("List tables").bounds();
+        let input = window.find_by_label("Select none").bounds();
         // Navigation 210, then (1590 - 980) / 2 of free space on each side.
         assert!(button.left() > gpui_kit::px(500.), "{:?}", button.left());
         assert!(input.right() < gpui_kit::px(1500.), "{:?}", input.right());
@@ -468,4 +575,595 @@ fn choosing_a_dump_folder_fills_the_form(cx: &mut TestAppContext) {
     cx.simulate_path_prompt_response(|_| None);
     cx.run_until_parked();
     assert_eq!(text(&mut cx), "~/DB Dump/mydumper");
+}
+
+/// The folder button of the dump form asks for one folder and uses it for
+/// this dump.
+#[gpui_kit::test]
+fn choosing_an_output_folder_fills_the_dump_form(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    let dump: Entity<DumpView> = shell.read_with(&cx, |shell, _| shell.dump.clone());
+    let out =
+        |cx: &mut VisualTestContext| dump.read_with(cx, |view, cx| view.options(true, cx).out);
+    let folder = root.join("DB Dump/other");
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.pick_profile("example".into(), window, cx);
+            view.choose_out(window, cx);
+        })
+    });
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files && !options.multiple);
+        Some(vec![folder.clone()])
+    });
+    cx.run_until_parked();
+    assert_eq!(out(&mut cx), Some(folder.clone()));
+
+    // Closing the dialog without a choice leaves the folder as it is.
+    cx.update(|window, cx| dump.update(cx, |view, cx| view.choose_out(window, cx)));
+    cx.simulate_path_prompt_response(|_| None);
+    cx.run_until_parked();
+    assert_eq!(out(&mut cx), Some(folder));
+}
+
+/// The unticked tables are written to the settings as they change, and come
+/// back unticked when the same database is listed again. A table that is
+/// new since then is ticked.
+#[gpui_kit::test]
+fn the_table_selection_is_remembered(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    let dump: Entity<DumpView> = shell.read_with(&cx, |shell, _| shell.dump.clone());
+    let table = |name: &str| Table {
+        name: name.to_string(),
+        is_view: false,
+    };
+    let list = |names: &[&str]| names.iter().map(|name| table(name)).collect::<Vec<_>>();
+    let saved = || {
+        let settings = Settings::load(&root.join("config")).unwrap();
+        settings.left_out("example", "example_db").to_vec()
+    };
+
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.pick_profile("example".into(), window, cx);
+            view.show_tables(
+                "example_db".into(),
+                list(&["accounts", "jobs", "users"]),
+                cx,
+            );
+            view.set_table(1, false, cx);
+        });
+    });
+    assert_eq!(saved(), ["jobs"]);
+
+    // Another database of the same profile starts with everything ticked.
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.database
+                .update(cx, |input, cx| input.set_value("other_db", window, cx));
+            view.show_tables("other_db".into(), list(&["jobs"]), cx);
+            assert!(view.options(true, cx).exclude.is_empty());
+        });
+    });
+
+    // Back on the first one, as after a restart of the app.
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.pick_profile("example".into(), window, cx);
+            view.database
+                .update(cx, |input, cx| input.set_value("example_db", window, cx));
+            view.show_tables(
+                "example_db".into(),
+                list(&["accounts", "jobs", "new_table", "users"]),
+                cx,
+            );
+            assert_eq!(view.options(true, cx).exclude, ["jobs"]);
+            // With another name in the field the list is of another
+            // database: nothing of it is left out.
+            view.database
+                .update(cx, |input, cx| input.set_value("third_db", window, cx));
+            assert!(view.tables_stale(cx));
+            assert!(view.options(true, cx).exclude.is_empty());
+            view.database
+                .update(cx, |input, cx| input.set_value("example_db", window, cx));
+            assert!(!view.tables_stale(cx));
+            // Everything ticked again: nothing is kept in the settings.
+            view.set_shown(true, cx);
+        });
+    });
+    assert!(saved().is_empty());
+}
+
+/// Deleting asks first, then removes the ticked dumps and their list
+/// entries; a dump that is not ticked stays.
+#[gpui_kit::test]
+fn ticked_dumps_are_deleted_after_a_confirmation(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let context = sandbox(&root);
+    let folder = |stamp: &str| root.join(format!("dumps/example_db__example__{stamp}"));
+    for stamp in ["20260102-000000", "20260103-000000"] {
+        fs::create_dir_all(folder(stamp)).unwrap();
+        fs::write(folder(stamp).join("metadata"), "x").unwrap();
+    }
+    let (shell, mut cx) = open(cx, context);
+    let dumps = shell.read_with(&cx, |shell, _| shell.dumps.clone());
+    cx.run_until_parked();
+    let listed = |cx: &mut VisualTestContext| {
+        dumps.read_with(cx, |view, _| view.roots.clone().unwrap()[0].1.clone())
+    };
+    assert_eq!(listed(&mut cx).len(), 3);
+    let ticked = vec![folder("20260101-000000"), folder("20260103-000000")];
+
+    // "Delete selected" only opens the dialog: nothing is deleted yet.
+    cx.update(|window, cx| {
+        dumps.update(cx, |view, cx| {
+            view.select(&ticked, true, cx);
+            let selected = view.selected_dumps();
+            assert_eq!(selected.len(), 2);
+            view.request_delete(selected, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(ticked.iter().all(|path| path.is_dir()));
+
+    // The button in the dialog calls this.
+    cx.update(|window, cx| {
+        window.close_dialog(cx);
+        dumps.update(cx, |view, cx| view.delete(ticked.clone(), cx));
+    });
+    cx.run_until_parked();
+    assert!(ticked.iter().all(|path| !path.exists()));
+    let left = listed(&mut cx);
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].path, folder("20260102-000000"));
+    assert_eq!(dumps.read_with(&cx, |view, _| view.error.clone()), None);
+    assert!(
+        dumps.read_with(&cx, |view, _| view.selected_dumps().is_empty()),
+        "a deleted dump is no longer ticked"
+    );
+}
+
+/// An icon whose file is not in the app is drawn as an empty space. Every
+/// icon the screens take from the full Lucide set must be in `AppAssets`.
+#[test]
+fn the_extra_icons_are_in_the_app() {
+    use gpui_kit::AssetSource as _;
+    use gpui_kit::assets::IconName;
+    for icon in [IconName::Database, IconName::FileText, IconName::Trash] {
+        let path = icon.path();
+        let found = crate::AppAssets.load(&path).unwrap();
+        assert!(found.is_some(), "{path}");
+    }
+    // The icons of the components still come through.
+    assert!(crate::AppAssets.load("icons/check.svg").unwrap().is_some());
+}
+
+/// "Test connection" asks the server with what the form shows and says what
+/// came back; "Delete" removes the profile and what was remembered for it.
+#[gpui_kit::test]
+fn a_profile_is_tested_and_deleted(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let mut context = sandbox(&root);
+    context
+        .settings
+        .set_left_out("example", "example_db", vec!["jobs".into()]);
+    // A mysql that knows one query, and fails when the form's host is not
+    // in the defaults file it is given.
+    // Written by hand: `fake_tool` answers `--version` like mydumper.
+    let mysql = root.join("bin/mysql");
+    let script = r#"#!/bin/sh
+case "$1" in
+  --defaults-file=*) file="${1#--defaults-file=}" ;;
+  *) echo "mysql  Ver 9.7.1 for example on arm64"; exit 0 ;;
+esac
+if [ "$2" = --print-defaults ]; then sed -n 's/^user=/--user=/p' "$file"; exit 0; fi
+grep -q typed.example.test "$file" || { echo "ERROR 2005: Unknown host" >&2; exit 1; }
+echo 8.0.36
+"#;
+    fs::write(&mysql, script).unwrap();
+    fs::set_permissions(&mysql, fs::Permissions::from_mode(0o755)).unwrap();
+    let (shell, mut cx) = open(cx, context);
+    let profiles = shell.read_with(&cx, |shell, _| shell.profiles.clone());
+    let message =
+        |cx: &mut VisualTestContext| profiles.read_with(cx, |view, _| view.message.clone());
+
+    // The saved host is refused; the server's reason is shown.
+    cx.update(|window, cx| {
+        profiles.update(cx, |view, cx| {
+            view.select("example", window, cx);
+            view.test_connection(cx);
+        })
+    });
+    cx.run_until_parked();
+    let (ok, text) = message(&mut cx).unwrap();
+    assert!(!ok && text.contains("Unknown host"), "{text}");
+
+    // A host typed in the form is tested without a save.
+    cx.update(|window, cx| {
+        profiles.update(cx, |view, cx| {
+            view.host.update(cx, |input, cx| {
+                input.set_value("typed.example.test", window, cx)
+            });
+            view.test_connection(cx);
+        })
+    });
+    cx.run_until_parked();
+    let (ok, text) = message(&mut cx).unwrap();
+    assert!(ok, "{text}");
+    assert_eq!(
+        text,
+        "Connected to example_user@typed.example.test:3306. Server version 8.0.36."
+    );
+    let file = root.join("config/profiles/example.cnf");
+    assert!(
+        fs::read_to_string(&file)
+            .unwrap()
+            .contains("db.example.test")
+    );
+
+    // The button in the confirmation dialog calls this.
+    cx.update(|window, cx| profiles.update(cx, |view, cx| view.delete("example", window, cx)));
+    assert!(!file.exists());
+    assert_eq!(message(&mut cx), Some((true, "Deleted example.".into())));
+    let settings = Settings::load(&root.join("config")).unwrap();
+    assert!(settings.left_out("example", "example_db").is_empty());
+}
+
+/// A dump of one profile can be loaded into another: the dumps are listed
+/// from the profile chosen for them, the load goes to the one loaded into.
+#[gpui_kit::test]
+fn a_dump_of_another_profile_can_be_loaded(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let context = sandbox(&root);
+    // A second profile with its own, empty dump folder.
+    fs::create_dir_all(root.join("local-dumps")).unwrap();
+    fs::write(
+        root.join("config/profiles/local.cnf"),
+        PROFILE
+            .replace("db.example.test", "127.0.0.1")
+            .replace("DUMPS", root.join("local-dumps").to_str().unwrap()),
+    )
+    .unwrap();
+    let (shell, mut cx) = open(cx, context);
+    let load: Entity<LoadView> = shell.read_with(&cx, |shell, _| shell.load.clone());
+    let from =
+        |cx: &mut VisualTestContext| load.read_with(cx, |view, _| view.dumps_from().cloned());
+
+    // The dumps follow the profile that is loaded into.
+    cx.update(|_, cx| load.update(cx, |view, cx| view.pick_profile("local".into(), cx)));
+    cx.run_until_parked();
+    assert_eq!(from(&mut cx).as_deref(), Some("local"));
+    assert_eq!(load.read_with(&cx, |view, _| view.dumps.len()), 0);
+
+    // Until another profile is chosen for them.
+    cx.update(|_, cx| load.update(cx, |view, cx| view.pick_source("example".into(), cx)));
+    cx.run_until_parked();
+    assert_eq!(load.read_with(&cx, |view, _| view.dumps.len()), 1);
+    cx.update(|window, cx| {
+        load.update(cx, |view, cx| {
+            view.pick_dump(0, window, cx);
+            view.dry_run(cx);
+        });
+    });
+    cx.run_until_parked();
+    let (summary, _) = load
+        .read_with(&cx, |view, _| view.preview.clone())
+        .unwrap()
+        .unwrap();
+    let summary = slipdock_core::report::plain(&summary);
+    assert!(summary.contains("  Profile   local"), "{summary}");
+    assert!(
+        summary.contains("example_db__example__20260101-000000"),
+        "{summary}"
+    );
+
+    // Loading into the profile the dumps are of is the plain case again.
+    cx.update(|_, cx| load.update(cx, |view, cx| view.pick_profile("example".into(), cx)));
+    cx.run_until_parked();
+    assert_eq!(from(&mut cx).as_deref(), Some("example"));
+    assert_eq!(load.read_with(&cx, |view, _| view.dumps.len()), 1);
+}
+
+/// The target database of a load is picked from the databases of the server
+/// that is loaded into; the list follows that profile.
+#[gpui_kit::test]
+fn the_target_databases_come_from_the_profile_loaded_into(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let context = sandbox(&root);
+    fs::write(
+        root.join("config/profiles/local.cnf"),
+        PROFILE
+            .replace("db.example.test", "127.0.0.1")
+            .replace("DUMPS", root.join("dumps").to_str().unwrap()),
+    )
+    .unwrap();
+    // A mysql whose databases depend on the host in its defaults file.
+    let mysql = root.join("bin/mysql");
+    let script = r#"#!/bin/sh
+case "$1" in
+  --defaults-file=*) file="${1#--defaults-file=}" ;;
+  *) echo "mysql  Ver 9.7.1 for example on arm64"; exit 0 ;;
+esac
+if [ "$2" = --print-defaults ]; then sed -n 's/^user=/--user=/p' "$file"; exit 0; fi
+if grep -q 127.0.0.1 "$file"; then printf 'local_a\nlocal_b\nsys\n'; else printf 'example_db\n'; fi
+"#;
+    fs::write(&mysql, script).unwrap();
+    fs::set_permissions(&mysql, fs::Permissions::from_mode(0o755)).unwrap();
+    let (shell, mut cx) = open(cx, context);
+    let load: Entity<LoadView> = shell.read_with(&cx, |shell, _| shell.load.clone());
+    let databases =
+        |cx: &mut VisualTestContext| load.read_with(cx, |view, _| view.databases.clone());
+
+    cx.update(|_, cx| load.update(cx, |view, cx| view.pick_profile("example".into(), cx)));
+    cx.run_until_parked();
+    assert_eq!(databases(&mut cx), ["example_db"]);
+
+    // Another profile to load into: its own databases, without the
+    // server's system ones.
+    cx.update(|_, cx| load.update(cx, |view, cx| view.pick_profile("local".into(), cx)));
+    cx.run_until_parked();
+    assert_eq!(databases(&mut cx), ["local_a", "local_b"]);
+
+    // The profile the dumps are of does not change the list.
+    cx.update(|_, cx| load.update(cx, |view, cx| view.pick_source("example".into(), cx)));
+    cx.run_until_parked();
+    assert_eq!(databases(&mut cx), ["local_a", "local_b"]);
+}
+
+/// A folder with many dumps is drawn a page at a time, and the filter
+/// narrows it by name or by date.
+#[gpui_kit::test]
+fn a_long_dump_folder_is_paged_and_filtered(cx: &mut TestAppContext) {
+    use crate::dumps_view::PAGE;
+    let (_temp, root) = temp_root();
+    let context = sandbox(&root);
+    // 60 more dumps, taken a minute apart on 2 March 2026.
+    for minute in 0..60 {
+        let dump = root.join(format!(
+            "dumps/example_db__example__20260302-10{minute:02}00"
+        ));
+        fs::create_dir_all(&dump).unwrap();
+        fs::write(dump.join("metadata"), "x").unwrap();
+    }
+    let (shell, mut cx) = open(cx, context);
+    let dumps = shell.read_with(&cx, |shell, _| shell.dumps.clone());
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Dumps, cx)));
+    cx.run_until_parked();
+    let folder = root.join("dumps");
+    let matching = |cx: &mut VisualTestContext| {
+        dumps.read_with(cx, |view, cx| {
+            let found = &view.roots.as_ref().unwrap()[0].1;
+            view.matching(found, cx).len()
+        })
+    };
+    assert_eq!(matching(&mut cx), 61);
+
+    // One page at first, one more with each "Show more"; at every width the
+    // rows and the row under them stay inside the window.
+    assert_eq!(
+        dumps.read_with(&cx, |view, cx| view.limit(&folder, cx)),
+        PAGE
+    );
+    cx.update(|_, cx| dumps.update(cx, |view, cx| view.show_more(&folder, cx)));
+    assert_eq!(
+        dumps.read_with(&cx, |view, cx| view.limit(&folder, cx)),
+        2 * PAGE
+    );
+    for width in [520., 1040.] {
+        cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(420.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_inside(window, width, "Dumps with many dumps");
+        });
+    }
+
+    // The filter looks at the name and at the date as it is shown, and
+    // starts at the first page again.
+    let filter = |text: &str, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            dumps.update(cx, |view, cx| {
+                view.filter
+                    .update(cx, |input, cx| input.set_value(text, window, cx));
+            })
+        });
+        cx.run_until_parked();
+    };
+    filter("20260302-1005", &mut cx);
+    assert_eq!(matching(&mut cx), 1);
+    assert_eq!(
+        dumps.read_with(&cx, |view, cx| view.limit(&folder, cx)),
+        PAGE
+    );
+    filter("2 mar 2026", &mut cx);
+    assert_eq!(matching(&mut cx), 60);
+    filter("1 Jan 2026", &mut cx);
+    assert_eq!(matching(&mut cx), 1);
+    filter("nothing like this", &mut cx);
+    assert_eq!(matching(&mut cx), 0);
+}
+
+/// The screen opens on the first profile, and "Save" knows whether the form
+/// differs from the file.
+#[gpui_kit::test]
+fn the_profile_form_knows_its_unsaved_changes(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    let profiles = shell.read_with(&cx, |shell, _| shell.profiles.clone());
+    let changed = |cx: &mut VisualTestContext| {
+        let ctx = cx.read(crate::state::core);
+        let profile = ctx.profile("example").unwrap();
+        profiles.read_with(cx, |view, cx| view.has_changes(&profile, cx))
+    };
+    // No click was needed: the first profile is in the form.
+    assert_eq!(
+        profiles.read_with(&cx, |view, cx| view.host.read(cx).value().to_string()),
+        "db.example.test"
+    );
+    assert!(!changed(&mut cx));
+
+    cx.update(|window, cx| {
+        profiles.update(cx, |view, cx| {
+            view.host.update(cx, |input, cx| {
+                input.set_value("other.example.test", window, cx)
+            });
+        })
+    });
+    assert!(changed(&mut cx));
+
+    cx.update(|window, cx| profiles.update(cx, |view, cx| view.save(window, cx)));
+    assert!(
+        !changed(&mut cx),
+        "saved: the form and the file agree again"
+    );
+    let file = fs::read_to_string(root.join("config/profiles/example.cnf")).unwrap();
+    assert!(file.contains("other.example.test"), "{file}");
+}
+
+/// "New profile" asks for the name in a dialog. A name that cannot be used
+/// keeps the dialog open; a good one closes it and opens the new profile.
+#[gpui_kit::test]
+fn a_new_profile_is_named_in_a_dialog(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    let profiles = shell.read_with(&cx, |shell, _| shell.profiles.clone());
+    let create = |name: &str, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            profiles.update(cx, |view, cx| {
+                view.new_name
+                    .update(cx, |input, cx| input.set_value(name, window, cx));
+                view.create(window, cx);
+            })
+        });
+        cx.run_until_parked();
+    };
+
+    cx.update(|window, cx| profiles.update(cx, |view, cx| view.open_new(window, cx)));
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+
+    create("not a name", &mut cx);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    let error = profiles
+        .read_with(&cx, |view, _| view.new_error.clone())
+        .unwrap();
+    assert!(error.contains("not a usable profile name"), "{error}");
+    // The existing one is not overwritten either.
+    create("example", &mut cx);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+
+    create("staging", &mut cx);
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(root.join("config/profiles/staging.cnf").is_file());
+    assert_eq!(
+        profiles.read_with(&cx, |view, _| view.message.clone()),
+        Some((true, "Created staging. Fill in the form and save.".into()))
+    );
+}
+
+/// When the server of the chosen profile does not answer, Dump and Load
+/// show why instead of the rest of the form, and fit the window doing so.
+#[gpui_kit::test]
+fn a_failed_connection_takes_the_place_of_the_form(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    // Without a mysql client, asking the server fails.
+    let context = sandbox(&root);
+    fs::remove_file(root.join("bin/mysql")).unwrap();
+    let (shell, mut cx) = open(cx, context);
+    let (dump, load) = shell.read_with(&cx, |shell, _| (shell.dump.clone(), shell.load.clone()));
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.pick_profile("example".into(), window, cx)
+        });
+        load.update(cx, |view, cx| view.pick_profile("example".into(), cx));
+    });
+    cx.run_until_parked();
+    let dump_error = dump
+        .read_with(&cx, |view, _| view.connect_error.clone())
+        .unwrap();
+    assert!(dump_error.contains("mysql"), "{dump_error}");
+    assert!(load.read_with(&cx, |view, _| view.connect_error.is_some()));
+
+    for screen in [Screen::Dump, Screen::Load] {
+        cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(screen, cx)));
+        for width in [520., 1040.] {
+            cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(420.)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                assert_inside(window, width, "a failed connection");
+            });
+        }
+    }
+
+    // "Try again" asks the server once more; the error is there again.
+    cx.update(|_, cx| dump.update(cx, |view, cx| view.list_databases(cx)));
+    assert!(dump.read_with(&cx, |view, _| view.connect_error.is_none()));
+    cx.run_until_parked();
+    assert!(dump.read_with(&cx, |view, _| view.connect_error.is_some()));
+}
+
+/// The database list follows the typed name, without regard to case or to
+/// spaces around it.
+#[test]
+fn the_database_list_is_narrowed_by_the_typed_name() {
+    use crate::widgets::matching_databases;
+    let databases: Vec<String> = (0..2000)
+        .map(|number| format!("customer_{number:04}"))
+        .chain(["Sales_Goal".to_string(), "sales_goal_testing".to_string()])
+        .collect();
+    assert_eq!(matching_databases(&databases, "").len(), 2002);
+    assert_eq!(
+        matching_databases(&databases, " sales_goal "),
+        ["Sales_Goal", "sales_goal_testing"]
+    );
+    assert_eq!(matching_databases(&databases, "_19").len(), 100);
+    assert!(matching_databases(&databases, "nothing like this").is_empty());
+}
+
+/// The app always asks for a full log, and the Dumps screen shows the logs
+/// beside a dump in a dialog that fits the window.
+#[gpui_kit::test]
+fn the_logs_of_a_dump_are_shown(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let context = sandbox(&root);
+    let long_line = "** Message: a line of a log that is long enough to need wrapping ".repeat(6);
+    fs::write(
+        root.join("dumps/example_db__example__20260101-000000.log"),
+        format!("{long_line}\nFinished dump\n"),
+    )
+    .unwrap();
+    let (shell, mut cx) = open(cx, context);
+    let (dump, dumps) = shell.read_with(&cx, |shell, _| (shell.dump.clone(), shell.dumps.clone()));
+
+    // Every dump the app starts logs at the most detailed level.
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.pick_profile("example".into(), window, cx)
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        dump.read_with(&cx, |view, cx| view.options(false, cx).log_level),
+        Some(3)
+    );
+
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Dumps, cx)));
+    cx.run_until_parked();
+    let listed = dumps.read_with(&cx, |view, _| view.roots.clone().unwrap()[0].1[0].clone());
+    cx.update(|window, cx| dumps.update(cx, |view, cx| view.show_logs(&listed, window, cx)));
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    for width in [520., 1040.] {
+        cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(420.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_inside(window, width, "the logs dialog");
+        });
+    }
 }
