@@ -438,3 +438,34 @@ fn a_long_page_scrolls(cx: &mut TestAppContext) {
         assert_eq!(top(&mut cx), before - gpui_kit::px(200.), "at {width} wide");
     }
 }
+
+/// The folder button of the profile form asks for one folder and writes it
+/// the way a profile stores it: `~` for home, a space left as a space.
+#[gpui_kit::test]
+fn choosing_a_dump_folder_fills_the_form(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    let profiles = shell.read_with(&cx, |shell, _| shell.profiles.clone());
+    let text = |cx: &mut VisualTestContext| {
+        profiles.read_with(cx, |view, cx| view.dump_dir.read(cx).value().to_string())
+    };
+    cx.update(|window, cx| {
+        profiles.update(cx, |view, cx| {
+            view.select("example", window, cx);
+            view.choose_dump_dir(window, cx);
+        })
+    });
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files && !options.multiple);
+        Some(vec![root.join("DB Dump/mydumper")])
+    });
+    cx.run_until_parked();
+    assert_eq!(text(&mut cx), "~/DB Dump/mydumper");
+
+    // Closing the dialog without a choice leaves the text as it is.
+    cx.update(|window, cx| profiles.update(cx, |view, cx| view.choose_dump_dir(window, cx)));
+    cx.simulate_path_prompt_response(|_| None);
+    cx.run_until_parked();
+    assert_eq!(text(&mut cx), "~/DB Dump/mydumper");
+}

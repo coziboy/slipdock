@@ -5,6 +5,8 @@
 //! through the core's line-preserving `Document`. "Open file" is there for
 //! the rest.
 
+use std::path::Path;
+
 use gpui_kit::component::button::*;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
@@ -28,7 +30,7 @@ pub struct ProfilesView {
     port: Entity<InputState>,
     user: Entity<InputState>,
     password: Entity<InputState>,
-    dump_dir: Entity<InputState>,
+    pub(crate) dump_dir: Entity<InputState>,
     tls_off: bool,
     keychain: bool,
     /// Feedback after an action: (it worked, text).
@@ -159,6 +161,31 @@ impl ProfilesView {
         profile.save()
     }
 
+    /// Opens the system's folder dialog and puts the chosen folder in the
+    /// form. Like typed text, it is written to the file on "Save".
+    pub(crate) fn choose_dump_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Use as dump folder".into()),
+        });
+        // `spawn_in` is `spawn` with the window at hand, needed to set the text.
+        cx.spawn_in(window, async move |this, cx| {
+            // Ok(Ok(Some(paths))) = the user picked something.
+            if let Ok(Ok(Some(paths))) = chosen.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let text = tilde_path(&path, core(cx).home.as_deref());
+                    this.dump_dir
+                        .update(cx, |input, cx| input.set_value(text, window, cx));
+                });
+            }
+        })
+        .detach();
+    }
+
     fn render_form(&self, profile: &Profile, cx: &mut Context<Self>) -> Div {
         let path = profile.path.clone();
         let password_hint = if self.keychain {
@@ -200,7 +227,22 @@ impl ProfilesView {
                     ),
                 cx,
             ))
-            .child(widgets::field("Dump folder", Input::new(&self.dump_dir), cx))
+            .child(widgets::field(
+                "Dump folder",
+                h_flex()
+                    .gap_2()
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.dump_dir)))
+                    .child(
+                        Button::new("choose-dump-dir")
+                            .outline()
+                            .icon(IconName::FolderOpen)
+                            .tooltip("Choose a folder")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.choose_dump_dir(window, cx)),
+                            ),
+                    ),
+                cx,
+            ))
             .child(widgets::field(
                 "TLS",
                 // As high as an input, so the box lines up with its label.
@@ -235,6 +277,16 @@ impl ProfilesView {
                             .on_click(move |_, _, cx| cx.open_with_system(&path)),
                     ),
             )
+    }
+}
+
+/// A folder as it is written in a profile: the home folder shortened to `~`,
+/// nothing escaped (the core expands `~` again and reads the rest as it is).
+fn tilde_path(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.to_string_lossy()),
+        None => path.to_string_lossy().into_owned(),
     }
 }
 
