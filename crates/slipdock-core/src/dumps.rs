@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::profile::Profile;
+use crate::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DumpInfo {
@@ -56,6 +57,105 @@ pub fn list(root: &Path) -> Vec<DumpInfo> {
     // Newest first; the name breaks ties so the order is stable.
     dumps.sort_by(|a, b| b.modified.cmp(&a.modified).then(b.name.cmp(&a.name)));
     dumps
+}
+
+/// When a dump was taken, read from the `__<YYYYmmdd-HHMMSS>` at the end of
+/// its name: `10 Nov 2026, 17:39`. `None` for a folder named differently.
+pub fn taken(name: &str) -> Option<String> {
+    let (_, stamp) = name.rsplit_once("__")?;
+    let time = jiff::civil::DateTime::strptime("%Y%m%d-%H%M%S", stamp).ok()?;
+    Some(time.strftime("%-d %b %Y, %H:%M").to_string())
+}
+
+/// Deletes a dump for good: the folder and the files Slipdock wrote beside
+/// it (`<dump>.log`, `<dump>.omit`, `<dump>__load_*.log`).
+pub fn delete(dump: &Path) -> Result<()> {
+    fs::remove_dir_all(dump).map_err(Error::io_at("cannot delete", dump))?;
+    let (Some(parent), Some(name)) = (dump.parent(), dump.file_name()) else {
+        return Ok(());
+    };
+    let name = name.to_string_lossy();
+    let load_logs = format!("{name}__load_");
+    for file in file_names(parent) {
+        let beside = file == format!("{name}.log")
+            || file == format!("{name}.omit")
+            || (file.starts_with(&load_logs) && file.ends_with(".log"));
+        let path = parent.join(&file);
+        if beside && path.is_file() {
+            fs::remove_file(&path).map_err(Error::io_at("cannot delete", &path))?;
+        }
+    }
+    Ok(())
+}
+
+/// One of the log files Slipdock wrote beside a dump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DumpLog {
+    pub path: PathBuf,
+    /// What the log is of: `Dump`, or `Load into staging, 3 Jan 2026, 00:00`.
+    pub title: String,
+    /// The end of the log, at most [`LOG_LINES`] lines.
+    pub text: String,
+    /// How many earlier lines are not in `text`.
+    pub lines_before: usize,
+}
+
+/// The lines of a log that are read for showing; a long log is cut at its
+/// start, because what went wrong is at its end.
+pub const LOG_LINES: usize = 300;
+
+/// The logs beside a dump: the one of the dump itself first, then one per
+/// load, newest first. A dump without logs gives an empty list.
+pub fn logs(dump: &Path) -> Vec<DumpLog> {
+    let (Some(parent), Some(name)) = (dump.parent(), dump.file_name()) else {
+        return Vec::new();
+    };
+    let name = name.to_string_lossy();
+    let load_logs = format!("{name}__load_");
+    let mut found = Vec::new();
+    let dump_log = parent.join(format!("{name}.log"));
+    if dump_log.is_file() {
+        found.push(read_log(dump_log, "Dump".to_string()));
+    }
+    let mut loads: Vec<String> = file_names(parent)
+        .into_iter()
+        .filter(|file| file.starts_with(&load_logs) && file.ends_with(".log"))
+        .collect();
+    // The timestamp ends the name, so the newest load comes first.
+    loads.sort_by(|a, b| load_stamp(b).cmp(load_stamp(a)));
+    for file in loads {
+        // `<profile>_<timestamp>` is what is left between the two marks.
+        let middle = &file[load_logs.len()..file.len() - ".log".len()];
+        let title = match middle.rsplit_once('_') {
+            Some((profile, stamp)) => match taken(&format!("__{stamp}")) {
+                Some(when) => format!("Load into {profile}, {when}"),
+                None => format!("Load into {middle}"),
+            },
+            None => format!("Load into {middle}"),
+        };
+        found.push(read_log(parent.join(&file), title));
+    }
+    found
+}
+
+/// The `<timestamp>.log` at the end of a load log's name.
+fn load_stamp(file: &str) -> &str {
+    file.rsplit_once('_').map_or(file, |(_, stamp)| stamp)
+}
+
+fn read_log(path: PathBuf, title: String) -> DumpLog {
+    // A log may hold bytes that are not UTF-8 (a table name, a value).
+    let text = fs::read(&path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_else(|error| format!("cannot read the log: {error}"));
+    let lines: Vec<&str> = text.lines().collect();
+    let lines_before = lines.len().saturating_sub(LOG_LINES);
+    DumpLog {
+        path,
+        title,
+        text: lines[lines_before..].join("\n"),
+        lines_before,
+    }
 }
 
 /// The distinct dump folders of the given profiles, in profile order.
@@ -193,6 +293,94 @@ mod tests {
         assert_eq!(info.size, 64);
         assert_eq!(info.source_db.as_deref(), Some("example_db"));
         assert_eq!(sql_file_count(&dir), 6);
+    }
+
+    #[test]
+    fn the_date_comes_from_the_name() {
+        assert_eq!(
+            taken("example_db__example__20261110-173915").as_deref(),
+            Some("10 Nov 2026, 17:39")
+        );
+        assert_eq!(
+            taken("odd__name__example__20260102-030405").as_deref(),
+            Some("2 Jan 2026, 03:04")
+        );
+        assert_eq!(taken("a_folder_named_by_hand"), None);
+        assert_eq!(taken("example_db__example__20261340-000000"), None);
+    }
+
+    #[test]
+    fn logs_are_the_dump_log_then_the_loads_newest_first() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = fixture(root.path(), "example_db__example__20260102-030405", true);
+        assert!(logs(&dir).is_empty());
+
+        let long: String = (0..LOG_LINES + 5)
+            .map(|line| format!("line {line}\n"))
+            .collect();
+        for (file, text) in [
+            ("example_db__example__20260102-030405.log", long.as_str()),
+            (
+                "example_db__example__20260102-030405__load_local_20260103-000000.log",
+                "old",
+            ),
+            (
+                "example_db__example__20260102-030405__load_a_b_20260104-101500.log",
+                "new",
+            ),
+            ("example_db__example__20260102-030406.log", "another dump"),
+        ] {
+            fs::write(root.path().join(file), text).unwrap();
+        }
+
+        let found = logs(&dir);
+        let titles: Vec<&str> = found.iter().map(|log| log.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "Dump",
+                "Load into a_b, 4 Jan 2026, 10:15",
+                "Load into local, 3 Jan 2026, 00:00"
+            ]
+        );
+        // A long log keeps its end.
+        assert_eq!(found[0].lines_before, 5);
+        assert!(
+            found[0].text.starts_with("line 5\n"),
+            "{}",
+            &found[0].text[..20]
+        );
+        assert!(found[0].text.ends_with(&format!("line {}", LOG_LINES + 4)));
+        assert_eq!(found[1].text, "new");
+    }
+
+    #[test]
+    fn delete_removes_the_dump_and_the_files_beside_it() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = fixture(root.path(), "example_db__example__20260102-030405", true);
+        let other = fixture(root.path(), "example_db__example__20260102-030406", true);
+        let beside = [
+            "example_db__example__20260102-030405.log",
+            "example_db__example__20260102-030405.omit",
+            "example_db__example__20260102-030405__load_example_20260103-000000.log",
+        ];
+        let kept = ["example_db__example__20260102-030406.log", "notes.txt"];
+        for file in beside.iter().chain(&kept) {
+            fs::write(root.path().join(file), b"x").unwrap();
+        }
+
+        delete(&dir).unwrap();
+
+        assert!(!dir.exists());
+        for file in beside {
+            assert!(!root.path().join(file).exists(), "{file}");
+        }
+        assert!(other.is_dir(), "another dump is not touched");
+        for file in kept {
+            assert!(root.path().join(file).exists(), "{file}");
+        }
+        let error = delete(&dir).unwrap_err().to_string();
+        assert!(error.contains("cannot delete"), "{error}");
     }
 
     #[test]
