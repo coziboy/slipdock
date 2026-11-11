@@ -55,7 +55,9 @@ fn main() {
 
     // `run` starts the event loop and calls the closure once it is ready.
     // `cx` is the `App`: the owner of all state, windows and entities.
-    gpui_kit::application().run(move |cx| {
+    // The assets are the icons the components draw (check marks, spinners).
+    let application = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+    application.run(move |cx| {
         gpui_kit::init(cx);
         cx.set_global(Core(context));
 
