@@ -52,7 +52,7 @@ pub fn field(label: &'static str, control: impl IntoElement, cx: &App) -> Div {
                 .text_color(cx.theme().muted_foreground)
                 .child(label),
         )
-        .child(div().flex_1().child(control))
+        .child(div().flex_1().min_w_0().child(control))
 }
 
 /// A bordered box that groups related things.
@@ -111,6 +111,9 @@ pub fn lines(lines: &[Line], cx: &App) -> Div {
                 )
                 .child(
                     div()
+                        // Lets a long value (a path) wrap instead of running
+                        // out of the window.
+                        .min_w_0()
                         .when(*strong, |this| this.font_weight(FontWeight::BOLD))
                         .child(value.clone()),
                 )

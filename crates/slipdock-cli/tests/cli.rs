@@ -663,3 +663,69 @@ fn app_without_the_app_installed_says_so() {
             .stderr(contains("the desktop app is not installed"));
     }
 }
+
+#[test]
+fn ctrl_c_stops_the_tool_reports_it_and_removes_the_temporary_file() {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command as Process, Stdio};
+
+    let sandbox = Sandbox::new();
+    sandbox.fake_tool("mydumper", "exec sleep 30");
+    let tmp = sandbox.root.join("tmp");
+    fs::create_dir_all(&tmp).unwrap();
+
+    // Its own process group, like a command started from a shell: Ctrl-C
+    // goes to slipdock and to the tool at the same moment.
+    let child = Process::new(env!("CARGO_BIN_EXE_slipdock"))
+        .args(["dump", "example", "example_db", "--log-level", "2"])
+        .env_clear()
+        .env("SLIPDOCK_CONFIG_DIR", sandbox.config())
+        .env("HOME", &sandbox.root)
+        .env("PATH", "/usr/bin:/bin")
+        .env("TMPDIR", &tmp)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+
+    // Wait until the temporary defaults file exists: the run has started.
+    let temp_files = || {
+        fs::read_dir(&tmp)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("slipdock-")
+            })
+            .count()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while temp_files() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        temp_files(),
+        1,
+        "the temporary defaults file exists during the run"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let group = format!("-{}", child.id());
+    assert!(
+        Process::new("kill")
+            .args(["-INT", "--", &group])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = child.wait_with_output().unwrap();
+
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(130), "{err}");
+    assert!(err.contains("! Interrupted."), "{err}");
+    assert!(err.contains("✗ Dump did not finish (exit 130)"), "{err}");
+    assert_eq!(temp_files(), 0, "the temporary defaults file is removed");
+}

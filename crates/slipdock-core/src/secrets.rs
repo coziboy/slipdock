@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use crate::profile::{Profile, SECTION};
 use crate::{Error, Result};
 
 /// The name under which Slipdock's entries appear in the keychain.
@@ -61,6 +62,34 @@ impl SecretStore for Keychain {
     }
 }
 
+/// Moves a profile's password into the store: stores it, marks the profile
+/// and removes the password line. The caller saves the profile afterwards.
+/// The store is written first, so a refusal leaves the profile as it was.
+pub fn move_to_store(store: &dyn SecretStore, profile: &mut Profile, password: &str) -> Result<()> {
+    if password.is_empty() {
+        return Err(Error::msg("no password given; nothing changed"));
+    }
+    store.set(&profile.name, password)?;
+    profile.doc.set(SECTION, "password-store", "keychain")?;
+    profile.doc.remove("client", "password");
+    Ok(())
+}
+
+/// The way back: removes the password from the store and the mark from the
+/// profile. With `password`, the line under `[client]` is written again;
+/// without, the caller tells the user to add it. The caller saves the profile.
+pub fn move_to_file(
+    store: &dyn SecretStore,
+    profile: &mut Profile,
+    password: Option<&str>,
+) -> Result<()> {
+    if let Some(password) = password {
+        profile.doc.set("client", "password", password)?;
+    }
+    profile.doc.remove(SECTION, "password-store");
+    store.clear(&profile.name)
+}
+
 /// Keeps passwords in memory. For tests.
 #[derive(Default)]
 pub struct MemoryStore(Mutex<HashMap<String, String>>);
@@ -98,5 +127,34 @@ mod tests {
         store.clear("example").unwrap();
         store.clear("example").unwrap();
         assert_eq!(store.get("example").unwrap(), None);
+    }
+
+    #[test]
+    fn a_password_moves_to_the_store_and_back() {
+        use crate::profile::{Document, PasswordStore};
+        let store = MemoryStore::default();
+        let mut profile = Profile {
+            name: "example".into(),
+            path: "/unused".into(),
+            doc: Document::parse("[client]\nhost = h\npassword = old\n"),
+        };
+
+        assert!(move_to_store(&store, &mut profile, "").is_err());
+        assert_eq!(profile.password_store(), PasswordStore::File);
+
+        move_to_store(&store, &mut profile, "s3cret").unwrap();
+        assert_eq!(store.get("example").unwrap().as_deref(), Some("s3cret"));
+        assert_eq!(profile.password_store(), PasswordStore::Keychain);
+        assert_eq!(profile.doc.get("client", "password"), None);
+
+        move_to_file(&store, &mut profile, Some("s3cret")).unwrap();
+        assert_eq!(store.get("example").unwrap(), None);
+        assert_eq!(profile.password_store(), PasswordStore::File);
+        assert_eq!(profile.doc.get("client", "password"), Some("s3cret"));
+        // The emptied [slipdock] section stays; that is harmless.
+        assert_eq!(
+            profile.doc.to_text(),
+            "[client]\nhost = h\npassword = s3cret\n\n[slipdock]\n"
+        );
     }
 }

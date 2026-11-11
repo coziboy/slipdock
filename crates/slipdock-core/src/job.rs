@@ -103,7 +103,15 @@ impl Defaults {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    pub fn is_temporary(&self) -> bool {
+        self._temp.is_some()
+    }
 }
+
+/// Shown under a dry-run command that names a temporary defaults file.
+pub const TEMPORARY_DEFAULTS_NOTE: &str = "(--defaults-file is a temporary copy of the profile \
+     with this run's settings; it exists only while a run lasts)";
 
 /// - `level`: a `verbose` value for `[mydumper]` and `[myloader]`, this run only.
 /// - `with_secret`: fetch a keychain password. A dry run passes `false`: it
@@ -450,6 +458,11 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    /// True when `--defaults-file` is a temporary copy, not the profile.
+    pub fn uses_temporary_defaults(&self) -> bool {
+        self._defaults.is_temporary()
+    }
+
     pub fn start(&self) -> Result<Running> {
         let watch = match &self.kind {
             Kind::Dump { out } => Some(out.as_path()),

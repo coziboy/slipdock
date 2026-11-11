@@ -163,9 +163,10 @@ fn check_value(key: &str, value: &str) -> Result<()> {
         .char_indices()
         .any(|(i, c)| c == '#' && value[..i].ends_with([' ', '\t']));
     if has_comment {
+        // The value is not repeated in the message: it may be a password.
         return Err(Error::msg(format!(
-            "{key}: no comments at the end of a line; mydumper would read \"{value}\" as the value. \
-             Put the comment on its own line."
+            "{key}: no comments at the end of a line (a space followed by #); mydumper would \
+             read the comment as part of the value. Put the comment on its own line."
         )));
     }
     Ok(())

@@ -360,6 +360,9 @@ impl DumpView {
                 page = page
                     .child(widgets::lines(summary, cx))
                     .child(widgets::mono(command, cx))
+                    .when(command.contains("slipdock-"), |this| {
+                        this.child(widgets::hint(job::TEMPORARY_DEFAULTS_NOTE, cx))
+                    })
                     .child(widgets::hint("(dry run, nothing executed)", cx));
             }
             Some(Err(error)) => page = page.child(widgets::error_text(error.clone(), cx)),

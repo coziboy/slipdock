@@ -30,7 +30,7 @@ use crate::tools_view::ToolsView;
 use crate::{ShowDump, ShowDumps, ShowLoad, ShowProfiles, ShowTools};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Screen {
+pub(crate) enum Screen {
     Dump,
     Load,
     Dumps,
@@ -39,7 +39,7 @@ enum Screen {
 }
 
 impl Screen {
-    const ALL: [Screen; 5] = [
+    pub(crate) const ALL: [Screen; 5] = [
         Screen::Dump,
         Screen::Load,
         Screen::Dumps,
@@ -63,7 +63,7 @@ pub struct Shell {
     pub(crate) dump: Entity<DumpView>,
     pub(crate) load: Entity<LoadView>,
     dumps: Entity<DumpsView>,
-    profiles: Entity<ProfilesView>,
+    pub(crate) profiles: Entity<ProfilesView>,
     tools: Entity<ToolsView>,
     /// Lets the window deliver key presses (and so actions) to this view.
     focus: FocusHandle,
@@ -91,7 +91,7 @@ impl Shell {
         }
     }
 
-    fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
+    pub(crate) fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         self.screen = screen;
         // Profiles or dumps may have changed on another screen: reload what
         // the new screen shows.
@@ -162,6 +162,9 @@ impl Render for Shell {
                 div()
                     .id("content")
                     .flex_1()
+                    // Without this a flex child never gets narrower than its
+                    // content, and long lines would push past the window.
+                    .min_w_0()
                     .h_full()
                     .overflow_y_scroll()
                     .p_6()

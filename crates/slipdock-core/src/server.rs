@@ -39,7 +39,7 @@ pub fn tables(ctx: &Context, profile: &Profile, database: &str) -> Result<Vec<Ta
 fn query(ctx: &Context, profile: &Profile, sql: &str) -> Result<String> {
     let mysql = tools::resolve(Tool::Mysql, &ctx.settings, &ctx.dirs)?;
     let defaults = job::defaults_for(ctx, profile, None, true)?;
-    let invocation = command::mysql_query(&mysql, defaults.path(), sql);
+    let invocation = command::mysql_query(&mysql, defaults.path(), sql, profile.tls_verify_off());
     match capture(&mut invocation.to_command(), QUERY_LIMIT) {
         Ok(output) if output.success() => Ok(output.stdout),
         Ok(output) => {

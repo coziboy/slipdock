@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext, WindowOptions};
 use slipdock_core::job::Context;
 use slipdock_core::secrets::MemoryStore;
@@ -17,7 +18,7 @@ use slipdock_core::tools::SearchDirs;
 
 use crate::dump_view::DumpView;
 use crate::load_view::LoadView;
-use crate::shell::Shell;
+use crate::shell::{Screen, Shell};
 use crate::state::Core;
 
 const PROFILE: &str = "\
@@ -138,6 +139,7 @@ fn dry_run_load_then_a_confirmed_load(cx: &mut TestAppContext) {
     let (_temp, root) = temp_root();
     let (shell, mut cx) = open(cx, sandbox(&root));
     let load: Entity<LoadView> = shell.read_with(&cx, |shell, _| shell.load.clone());
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Load, cx)));
 
     cx.update(|_, cx| load.update(cx, |view, cx| view.pick_profile("example".into(), cx)));
     cx.run_until_parked();
@@ -163,6 +165,27 @@ fn dry_run_load_then_a_confirmed_load(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
     assert!(load.read_with(&cx, |view, _| view.pending.is_some()));
+
+    // "Start load" is off until the typed name is the target database.
+    let start_disabled = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.find_by_label("Start load").disabled()
+        })
+    };
+    assert_eq!(start_disabled(&mut cx), Some(true));
+    cx.update(|window, cx| {
+        load.update(cx, |view, cx| {
+            view.confirm
+                .update(cx, |input, cx| input.set_value("example_db", window, cx))
+        })
+    });
+    cx.run_until_parked();
+    assert_ne!(
+        start_disabled(&mut cx),
+        Some(true),
+        "the right name enables Start"
+    );
 
     // A wrong name starts nothing.
     cx.update(|window, cx| {
@@ -196,4 +219,24 @@ fn dry_run_load_then_a_confirmed_load(cx: &mut TestAppContext) {
     assert!(report.success, "{}", report.plain());
     assert!(report.plain().contains("Load complete"));
     assert!(root.join("loaded").exists());
+}
+
+#[gpui_kit::test]
+fn every_screen_draws(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    for screen in Screen::ALL {
+        cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(screen, cx)));
+        // Background loads (tool checks, dump sizes) finish, then a frame
+        // is drawn with their results.
+        cx.run_until_parked();
+        cx.update(|window, cx| window.render_frame(cx));
+    }
+    // The Profiles form: select the profile and draw again.
+    cx.update(|window, cx| {
+        let profiles = shell.read(cx).profiles.clone();
+        profiles.update(cx, |view, cx| view.select("example", window, cx));
+        shell.update(cx, |shell, cx| shell.show(Screen::Profiles, cx));
+        window.render_frame(cx);
+    });
 }

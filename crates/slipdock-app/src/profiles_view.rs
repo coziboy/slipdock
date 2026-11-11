@@ -12,7 +12,7 @@ use gpui_kit::component::{ActiveTheme, Selectable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::profile::{self, PasswordStore, Profile, SECTION};
-use slipdock_core::{Error, Result};
+use slipdock_core::{Error, Result, secrets};
 
 use crate::state::core;
 use crate::widgets;
@@ -68,7 +68,7 @@ impl ProfilesView {
     }
 
     /// Puts a profile's values into the form.
-    fn select(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn select(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(profile) = self.profiles.iter().find(|profile| profile.name == name) else {
             return;
         };
@@ -162,23 +162,19 @@ impl ProfilesView {
         let was_keychain = profile.password_store() == PasswordStore::Keychain;
         if self.keychain {
             if !password.is_empty() {
-                ctx.secrets.set(&name, &password)?;
+                secrets::move_to_store(ctx.secrets.as_ref(), &mut profile, &password)?;
             } else if !was_keychain {
                 return Err(Error::msg("type the password to move it to the keychain"));
             }
-            profile.doc.set(SECTION, "password-store", "keychain")?;
-            profile.doc.remove("client", "password");
-        } else {
-            if was_keychain && password.is_empty() {
+        } else if was_keychain {
+            if password.is_empty() {
                 return Err(Error::msg(
                     "type the password to move it back into the file",
                 ));
             }
+            secrets::move_to_file(ctx.secrets.as_ref(), &mut profile, Some(&password))?;
+        } else {
             profile.doc.set("client", "password", &password)?;
-            profile.doc.remove(SECTION, "password-store");
-            if was_keychain {
-                ctx.secrets.clear(&name)?;
-            }
         }
         profile.save()
     }
@@ -192,6 +188,7 @@ impl ProfilesView {
         };
         widgets::card(cx)
             .flex_1()
+            .min_w_0()
             .child(widgets::subheading(profile.name.clone()).mt_0())
             .child(widgets::hint(core(cx).show_path(&profile.path), cx))
             .child(widgets::field("Host", Input::new(&self.host), cx))
@@ -252,7 +249,7 @@ fn list_or_none(names: &[String]) -> String {
 
 impl Render for ProfilesView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = v_flex().w(px(300.)).flex_shrink_0().gap_1();
+        let mut list = v_flex().w(px(240.)).flex_shrink_0().gap_1();
         for (index, profile) in self.profiles.iter().enumerate() {
             let name = profile.name.clone();
             let mut notes = profile.target();

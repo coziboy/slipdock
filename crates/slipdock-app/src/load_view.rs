@@ -5,7 +5,6 @@
 //! of the target database has been typed. The check itself is the core's
 //! (`LoadPlan::confirms`), the same one the command line tool uses.
 
-use std::cell::Cell;
 use std::path::PathBuf;
 
 use gpui_kit::component::Disableable as _;
@@ -201,20 +200,22 @@ impl LoadView {
         let profile = self.profile.clone().unwrap_or_default();
         let server = plan.server.clone();
         let target = plan.target.clone();
-        let summary = plan.summary.clone();
+        let dump = self
+            .dump
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
         self.pending = Some(plan);
         self.confirm
             .update(cx, |input, cx| input.set_value("", window, cx));
 
         let view = cx.entity();
         let input = self.confirm.clone();
-        let focus_once = Cell::new(true);
-        // The builder may run many times while the dialog is open; it only
-        // describes the dialog from the current state.
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if focus_once.replace(false) {
-                input.focus_handle(cx).focus(window, cx);
-            }
+        // The builder may run many times while the dialog is open (also more
+        // than once per frame), so it only describes the dialog from the
+        // current state and changes nothing, not even the focus.
+        window.open_dialog(cx, move |dialog, _, cx| {
             let typed = input.read(cx).value();
             let matches = typed.as_ref() == target.as_str();
             let cancel_view = view.clone();
@@ -243,11 +244,11 @@ impl LoadView {
                                         .child(format!("{profile}   {server}")),
                                 ),
                         )
-                        .child(widgets::lines(&summary[1..], cx))
+                        .child(widgets::hint(format!("Dump: {dump}"), cx))
                         .child(div().text_color(cx.theme().danger).child(
                             "Tables in the dump are dropped and recreated in the target database.",
                         ))
-                        .child(format!("Type {target} to continue:"))
+                        .child(format!("Click the field and type {target} to continue:"))
                         .child(Input::new(&input)),
                 )
                 .footer(
@@ -418,6 +419,9 @@ impl LoadView {
                 page = page
                     .child(widgets::lines(summary, cx))
                     .child(widgets::mono(command, cx))
+                    .when(command.contains("slipdock-"), |this| {
+                        this.child(widgets::hint(job::TEMPORARY_DEFAULTS_NOTE, cx))
+                    })
                     .child(widgets::hint("(dry run, nothing executed)", cx));
             }
             Some(Err(error)) => page = page.child(widgets::error_text(error.clone(), cx)),

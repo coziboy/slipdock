@@ -141,12 +141,12 @@ pub fn myloader(load: &Load) -> Invocation {
 
 /// One query with the mysql client: no column names (`-N`), tab separated
 /// (`-B`). The client wants `--defaults-file=...` as one word, and first.
-pub fn mysql_query(program: &Path, defaults_file: &Path, sql: &str) -> Invocation {
+pub fn mysql_query(program: &Path, defaults_file: &Path, sql: &str, tls_off: bool) -> Invocation {
     let mut defaults = OsString::from("--defaults-file=");
     defaults.push(defaults_file);
-    // TLS: the mysql client does not verify the certificate unless asked to,
-    // so no variable is needed here.
-    Invocation::new(program, false)
+    // Recent MariaDB clients verify the certificate by default, so the
+    // variable is set for them too. The MySQL client ignores it.
+    Invocation::new(program, tls_off)
         .arg(defaults)
         .args(["-N", "-B", "-e", sql])
 }
@@ -382,7 +382,9 @@ mod tests {
             Path::new("/tools/mysql"),
             Path::new("/config/profiles/example.cnf"),
             "SHOW DATABASES",
+            true,
         );
+        assert_eq!(invocation.env.len(), 1);
         assert_eq!(
             strings(&invocation),
             [

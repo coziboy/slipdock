@@ -10,12 +10,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use slipdock_core::job::{self, Context, DumpOptions, LoadOptions, Prepared};
 use slipdock_core::platform::{self, PackageManager};
-use slipdock_core::profile::{self, PasswordStore, SECTION};
+use slipdock_core::profile::{self, PasswordStore};
 use slipdock_core::report;
 use slipdock_core::run::{Event, Outcome};
 use slipdock_core::settings::Settings;
 use slipdock_core::tools::{self, InstallPlan, Tool};
-use slipdock_core::{Error, Result, dumps};
+use slipdock_core::{Error, Result, dumps, secrets};
 
 use crate::cli::{PasswordCommand, RunOptions, Shell, ToolName, ToolsCommand};
 use crate::ui;
@@ -182,6 +182,9 @@ fn execute(prepared: &Prepared, run: &RunOptions, interrupt: &AtomicBool) -> Res
         println!("{}", prepared.invocation.preview());
     }
     if run.dry_run {
+        if prepared.uses_temporary_defaults() {
+            anstream::println!("{}", ui::dim(job::TEMPORARY_DEFAULTS_NOTE));
+        }
         anstream::println!("{}", ui::dim("(dry run, nothing executed)"));
         return Ok(OK);
     }
@@ -217,7 +220,13 @@ fn execute(prepared: &Prepared, run: &RunOptions, interrupt: &AtomicBool) -> Res
         }
     }
     line.clear();
-    let outcome = outcome.ok_or_else(|| Error::msg("the run ended without a result"))?;
+    let mut outcome = outcome.ok_or_else(|| Error::msg("the run ended without a result"))?;
+    // Ctrl-C in a terminal reaches the tool as well as us. If the tool was
+    // quicker to exit than the watcher was to notice, the outcome does not
+    // know about the interrupt yet; the signal flag does.
+    if interrupt.load(Ordering::SeqCst) {
+        outcome.interrupted = true;
+    }
 
     let report = prepared.report(&outcome);
     if report.success {
@@ -423,13 +432,7 @@ pub fn password(ctx: &Context, command: PasswordCommand) -> Result<i32> {
                 context: "cannot read the password".into(),
                 source,
             })?;
-            if password.is_empty() {
-                return Err(Error::msg("no password given; nothing changed"));
-            }
-            // Keychain first: if it refuses, the file still has the password.
-            ctx.secrets.set(&name, &password)?;
-            profile.doc.set(SECTION, "password-store", "keychain")?;
-            profile.doc.remove("client", "password");
+            secrets::move_to_store(ctx.secrets.as_ref(), &mut profile, &password)?;
             profile.save()?;
             println!(
                 "Stored in the system keychain. The password line was removed from {}.",
@@ -438,8 +441,7 @@ pub fn password(ctx: &Context, command: PasswordCommand) -> Result<i32> {
         }
         PasswordCommand::Clear { profile: name } => {
             let mut profile = ctx.profile(&name)?;
-            ctx.secrets.clear(&name)?;
-            profile.doc.remove(SECTION, "password-store");
+            secrets::move_to_file(ctx.secrets.as_ref(), &mut profile, None)?;
             profile.save()?;
             println!(
                 "Removed from the system keychain. Add the password to {} again:\n  \
