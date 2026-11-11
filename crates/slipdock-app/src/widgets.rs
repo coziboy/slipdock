@@ -565,6 +565,7 @@ pub fn lines(lines: &[Line], cx: &App) -> Div {
             ),
             Line::Text(text) => div().pl_4().child(text.trim_start().to_string()),
             Line::Dim(text) => div().pl_4().text_color(muted).child(text.clone()),
+            Line::Quote(text) => div().pl_4().text_color(muted).child(format!("│ {text}")),
             Line::Blank => div().h_2(),
         };
         column = column.child(row);

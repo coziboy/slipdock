@@ -572,17 +572,12 @@ impl Prepared {
         let code = outcome.exit_code();
         if code != 0 {
             // What the tool printed itself (not its log) often names the cause.
-            lines.extend(
-                outcome
-                    .output_head
-                    .iter()
-                    .map(|l| Line::Dim(format!("│ {l}"))),
-            );
+            lines.extend(outcome.output_head.iter().map(|l| Line::Quote(l.clone())));
             let more = outcome
                 .output_lines
                 .saturating_sub(outcome.output_head.len());
             if more > 0 {
-                lines.push(Line::Dim(format!("│ … {more} more lines in the log")));
+                lines.push(Line::Quote(format!("… {more} more lines in the log")));
             }
         }
         if outcome.interrupted {

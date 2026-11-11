@@ -33,6 +33,9 @@ const MEASURE_EVERY: u32 = 5;
 /// How much of the tool's own output is kept for the report.
 const HEAD_LINES: usize = 4;
 const HEAD_WIDTH: usize = 200;
+/// The most lines of the tool's output that are kept whole, for a front
+/// end with room to show them. The log file has all of them.
+const OUTPUT_LINES: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Progress {
@@ -51,6 +54,8 @@ pub struct Outcome {
     /// The first lines the tool printed itself (not its log file), without
     /// empty lines and tidied with [`tidy_line`].
     pub output_head: Vec<String>,
+    /// The same lines at their full length, up to 200 of them.
+    pub output: Vec<String>,
     /// How many lines it printed in total, not counting empty ones.
     pub output_lines: usize,
 }
@@ -178,6 +183,7 @@ pub fn start(invocation: &Invocation, watch: Option<&Path>, log: &Path) -> Resul
                 .take(HEAD_LINES)
                 .map(|line| line.chars().take(HEAD_WIDTH).collect())
                 .collect(),
+            output: lines.iter().take(OUTPUT_LINES).cloned().collect(),
             output_lines: lines.len(),
         }));
     });
@@ -476,6 +482,9 @@ mod tests {
             ["line 1", "line 2", "line 3", "line 4"]
         );
         assert_eq!(outcome.output_lines, 6);
+        // The whole lines are kept too, for a front end with room for them.
+        assert_eq!(outcome.output.len(), 6);
+        assert_eq!(outcome.output[5], "line 6");
     }
 
     #[test]

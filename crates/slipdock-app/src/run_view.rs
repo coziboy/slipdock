@@ -49,6 +49,9 @@ pub struct RunView {
     cancelling: bool,
     /// Present when the run has ended.
     pub(crate) report: Option<Report>,
+    /// After a failed run: what the tool printed, whole, in a box of the
+    /// report whose text can be selected and copied.
+    pub(crate) tool_output: Option<Entity<LogView>>,
     /// Kept until the run ends: it owns the temporary defaults file.
     prepared: Option<Prepared>,
     /// A task is cancelled when its handle is dropped, so the view keeps it.
@@ -68,6 +71,7 @@ impl RunView {
             cancel: None,
             cancelling: false,
             report: None,
+            tool_output: None,
             prepared: None,
             _events: None,
         };
@@ -135,11 +139,20 @@ impl RunView {
                 self.progress = Some(progress);
             }
             Event::Finished(outcome) => {
-                // After a failed run the report quotes what the tool printed,
+                // After a failed run the report shows what the tool printed,
                 // so the log box leaves that part out, unless the report
-                // had no room for all of it.
-                let quoted_in_full =
-                    outcome.exit_code() != 0 && outcome.output_lines <= outcome.output_head.len();
+                // did not get all of it.
+                let failed = outcome.exit_code() != 0;
+                let quoted_in_full = failed && outcome.output_lines <= outcome.output.len();
+                if failed && !outcome.output.is_empty() {
+                    let mut text = outcome.output.join("\n");
+                    let more = outcome.output_lines - outcome.output.len();
+                    if more > 0 {
+                        text.push_str(&format!("\n… {more} more lines in the log"));
+                    }
+                    self.tool_output =
+                        Some(cx.new(|_| LogView::quote(&text, "Copy the tool output").rows(20)));
+                }
                 let lines = self.reader.finish(!quoted_in_full);
                 self.add_to_log(lines, cx);
                 self.log_view.update(cx, |view, cx| view.set_finished(cx));
@@ -256,11 +269,28 @@ impl Render for RunView {
                 } else {
                     cx.theme().danger
                 };
+                // The command line tool quotes the first lines the tool
+                // printed above its verdict. Here the verdict comes first,
+                // and all the tool printed is in a box under it.
+                let lines: Vec<Line> = report
+                    .lines
+                    .iter()
+                    .filter(|line| self.tool_output.is_none() || !matches!(line, Line::Quote(_)))
+                    .cloned()
+                    .collect();
                 this.child(
                     widgets::card(cx)
                         .border_color(color.opacity(0.5))
                         .bg(color.opacity(0.06))
-                        .child(widgets::lines(&report.lines, cx)),
+                        .child(widgets::lines(&lines, cx))
+                        .when_some(self.tool_output.clone(), |card, output| {
+                            card.child(
+                                v_flex()
+                                    .min_w_0()
+                                    .child(widgets::subheading("Tool output", cx))
+                                    .child(output),
+                            )
+                        }),
                 )
             })
     }

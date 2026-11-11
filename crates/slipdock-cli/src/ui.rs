@@ -60,6 +60,7 @@ fn styled(line: &Line) -> String {
         Line::Warn(text) => format!("{} {text}", paint(YELLOW, "!")),
         Line::Text(text) => format!("  {text}"),
         Line::Dim(text) => format!("  {}", dim(text)),
+        Line::Quote(text) => format!("  {}", dim(&format!("│ {text}"))),
         Line::Blank => String::new(),
     }
 }

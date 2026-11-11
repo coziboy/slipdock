@@ -1508,3 +1508,91 @@ fn the_log_of_a_run_stays_where_it_is_read(cx: &mut TestAppContext) {
     assert!(at_end);
     assert!(log.read_with(&cx, |view, _| view.follow));
 }
+
+/// After a failed load, all the tool printed is in a box of the report:
+/// whole lines that can be copied, from the first one, and not a second
+/// time in the log box.
+#[gpui_kit::test]
+fn a_failed_load_shows_all_the_tool_printed(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let ctx = sandbox(&root);
+    // Longer than the 200 characters the command line report keeps.
+    let cause = format!("ERROR 1822: {} in the referenced table", "x".repeat(300));
+    let body = format!(
+        "before=\"\"\nfor arg in \"$@\"; do\n  if [ \"$before\" = --logfile ]; then echo \"2026-01-01 00:00:00 [INFO] - a line of the fake myloader\" >> \"$arg\"; fi\n  before=\"$arg\"\ndone\n\
+         echo '** (myloader:1): CRITICAL **: 15:01:33.381: {cause}' >&2\n\
+         for i in $(seq 1 40); do echo \"  column $i\" >&2; done\nexit 1"
+    );
+    fake_tool(&root.join("bin"), "myloader", &body);
+    let (shell, mut cx) = open(cx, ctx);
+    let load: Entity<LoadView> = shell.read_with(&cx, |shell, _| shell.load.clone());
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Load, cx)));
+    cx.update(|_, cx| load.update(cx, |view, cx| view.pick_profile("example".into(), cx)));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        load.update(cx, |view, cx| {
+            view.pick_dump(0, window, cx);
+            view.request_load(window, cx);
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        load.update(cx, |view, cx| {
+            view.confirm
+                .update(cx, |input, cx| input.set_value("example_db", window, cx));
+            view.start_confirmed(cx);
+        });
+        window.close_dialog(cx);
+    });
+    cx.run_until_parked();
+    let run = load
+        .read_with(&cx, |view, _| view.run.clone())
+        .expect("the run view is shown");
+    let report = run
+        .read_with(&cx, |view, _| view.report.clone())
+        .expect("the run has finished");
+    assert!(!report.success);
+    cx.update(|_, cx| {
+        run.update(cx, |view, cx| {
+            view.log_open = true;
+            cx.notify();
+        })
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.render_frame(cx));
+
+    let output = run
+        .read_with(&cx, |view, _| view.tool_output.clone())
+        .expect("the report has a box with the tool output");
+    let text = output.read_with(&cx, |view, cx| view.text(cx));
+    assert!(
+        text.starts_with(&format!("CRITICAL: {cause}\n  column 1\n")),
+        "{text}"
+    );
+    assert!(text.ends_with("  column 40"), "{text}");
+    // More lines than the box is high: it shows the first, where the cause is.
+    let (offset, at_end) = output.read_with(&cx, |view, cx| view.scroll(cx));
+    assert_eq!(offset, gpui_kit::px(0.));
+    assert!(!at_end);
+
+    // The log box has the log of the tool, and not its output again.
+    let log = run.read_with(&cx, |view, _| view.log_view.clone());
+    let log_text = log.read_with(&cx, |view, cx| view.text(cx));
+    assert!(
+        log_text.contains("a line of the fake myloader"),
+        "{log_text}"
+    );
+    assert!(!log_text.contains("column 1"), "{log_text}");
+
+    // A box that starts at its first line has no button to its end.
+    cx.update(|window, _| assert!(window.try_find_by_label("Go to end").is_none()));
+
+    // In a narrow window the report and its box stay inside it.
+    let width = 520.;
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(420.)));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_inside(window, width, "failed load report");
+    });
+}

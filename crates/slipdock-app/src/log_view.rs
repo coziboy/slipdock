@@ -34,7 +34,8 @@ use crate::widgets;
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 
 /// The rows of the box: it is as high as its text, from this many to
-/// [`LogView::rows`].
+/// [`LogView::rows`]. A box that starts at its first line (a quote) can be
+/// as low as one row.
 const MIN_ROWS: usize = 3;
 
 /// What the editor adds to the height of its rows: padding and border.
@@ -59,6 +60,12 @@ pub struct LogView {
     live: bool,
     /// The most rows the box shows at once.
     max_rows: usize,
+    /// The box holds a text that is whole from the start (what a tool
+    /// printed, quoted in a report): it opens at its first line, where the
+    /// cause is, and has no button to its end.
+    from_start: bool,
+    /// What the copy button says it copies.
+    copy_tooltip: SharedString,
     /// Older lines were dropped to stay under [`MAX_BYTES`].
     trimmed: bool,
     /// `pending` lost its start, so it does not go on from the editor's text.
@@ -76,6 +83,8 @@ impl LogView {
             last_offset: px(0.),
             live,
             max_rows: 16,
+            from_start: false,
+            copy_tooltip: "Copy the log".into(),
             trimmed: false,
             gap: false,
             _observe_editor: None,
@@ -86,6 +95,23 @@ impl LogView {
     pub fn rows(mut self, rows: usize) -> Self {
         self.max_rows = rows;
         self
+    }
+
+    /// A box for a text that is whole from the start: it opens at its
+    /// first line and stays there. `copy_tooltip` names what is copied.
+    pub fn quote(text: &str, copy_tooltip: impl Into<SharedString>) -> Self {
+        let mut view = LogView::new(false);
+        view.follow = false;
+        view.from_start = true;
+        view.copy_tooltip = copy_tooltip.into();
+        // A text over the limit would wait to be followed, which a quote
+        // never is: it keeps its start, where the cause is.
+        let mut end = text.len().min(MAX_BYTES / 2);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        view.pending = text[..end].to_string();
+        view
     }
 
     /// Adds lines at the end.
@@ -179,6 +205,11 @@ impl LogView {
                 .scroll_beyond_last_line(Some(0))
                 .scroll_bounce(false)
         });
+        self.editor = Some(editor.clone());
+        if self.from_start {
+            // Nothing is added to a quote, so there is no end to follow.
+            return editor;
+        }
         // Runs whenever the editor changed: among other things, when it
         // was scrolled.
         self._observe_editor = Some(cx.observe(&editor, |this, editor, cx| {
@@ -199,7 +230,6 @@ impl LogView {
                 cx.notify();
             }
         }));
-        self.editor = Some(editor.clone());
         editor
     }
 
@@ -296,7 +326,8 @@ impl Render for LogView {
             rows => rows,
         };
         let line_height = state.line_height().unwrap_or(px(20.));
-        let height = line_height * rows.clamp(MIN_ROWS, self.max_rows) as f32 + FRAME;
+        let min_rows = if self.from_start { 1 } else { MIN_ROWS };
+        let height = line_height * rows.clamp(min_rows, self.max_rows) as f32 + FRAME;
         let this = cx.entity().downgrade();
 
         v_flex()
@@ -316,7 +347,7 @@ impl Render for LogView {
                             widgets::hint("The first lines are only in the log file.", cx).flex_1(),
                         )
                     })
-                    .when(!self.follow, |row| {
+                    .when(!self.follow && !self.from_start, |row| {
                         row.child(
                             Button::new("log-to-end")
                                 .small()
@@ -335,7 +366,7 @@ impl Render for LogView {
                                     .map(|view| view.read(cx).text(cx))
                                     .unwrap_or_default()
                             })
-                            .tooltip("Copy the log"),
+                            .tooltip(self.copy_tooltip.clone()),
                     ),
             )
             .child(Editor::new(&editor).h(height).readonly(true))

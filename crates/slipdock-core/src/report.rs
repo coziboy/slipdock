@@ -31,6 +31,10 @@ pub enum Line {
     Text(String),
     /// An indented line of less important text.
     Dim(String),
+    /// `│ text`: a line the tool printed itself, quoted in the report. A
+    /// front end that shows the tool's output in another way leaves these
+    /// lines out.
+    Quote(String),
     Blank,
 }
 
@@ -68,6 +72,7 @@ impl Line {
             Line::Fail(text) => format!("✗ {text}"),
             Line::Warn(text) => format!("! {text}"),
             Line::Text(text) | Line::Dim(text) => format!("  {text}"),
+            Line::Quote(text) => format!("  │ {text}"),
             Line::Blank => String::new(),
         }
     }
@@ -122,12 +127,13 @@ mod tests {
             Line::Fail("Load failed".into()),
             Line::Warn("Interrupted.".into()),
             Line::Text("  detail".into()),
+            Line::Quote("CRITICAL: no zstd".into()),
             Line::Blank,
         ];
         assert_eq!(
             plain(&lines),
             "slipdock dump\n  Profile   example  user@host:3306\n  Database  example_db\n            second line\n\
-             ✓ Dump complete  0:05\n✗ Load failed\n! Interrupted.\n    detail\n"
+             ✓ Dump complete  0:05\n✗ Load failed\n! Interrupted.\n    detail\n  │ CRITICAL: no zstd\n"
         );
     }
 
