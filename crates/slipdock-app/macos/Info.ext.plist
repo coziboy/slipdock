@@ -1,0 +1,9 @@
+  <!-- Added to Slipdock.app's Info.plist by `cargo bundle`. An app started
+       from Finder gets PATH=/usr/bin:/bin:/usr/sbin:/sbin. Slipdock finds
+       mydumper without PATH, but the Tools screen runs `brew` by name, and
+       brew is in none of those folders. -->
+  <key>LSEnvironment</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>

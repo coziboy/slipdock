@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Placeholder app icon. macOS icon grid: an 824px rounded square on a
+       1024px canvas. After editing, render icon.png again (see README). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f6fed"/>
+      <stop offset="1" stop-color="#173a8f"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <!-- A database: three stacked discs. -->
+  <g fill="none" stroke="#ffffff" stroke-width="44" stroke-linecap="round">
+    <ellipse cx="512" cy="372" rx="200" ry="72" fill="#ffffff" fill-opacity="0.18"/>
+    <path d="M312 372v140c0 40 90 72 200 72s200-32 200-72V372"/>
+    <path d="M312 512v140c0 40 90 72 200 72s200-32 200-72V512"/>
+  </g>
+</svg>

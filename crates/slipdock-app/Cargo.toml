@@ -22,3 +22,18 @@ tempfile.workspace = true
 # here lets Cargo pick one version that suits both backends.
 taffy = "=0.15.0"
 unicode-properties = "=0.1.3"
+
+# Read by `cargo bundle` (cargo-bundle), which wraps the binary in
+# Slipdock.app. Plain `cargo build` ignores this section. The paths are
+# relative to the repository root: cargo-bundle resolves them from the folder
+# it is started in, and silently skips a file it does not find.
+[package.metadata.bundle]
+name = "Slipdock"
+identifier = "app.slipdock.Slipdock"
+icon = ["crates/slipdock-app/macos/icon.svg"]
+category = "public.app-category.developer-tools"
+
+[package.metadata.bundle.osx]
+# The value the linker records in the binary (`otool -l`, LC_BUILD_VERSION).
+minimum_system_version = "11.0"
+info_plist_exts = ["crates/slipdock-app/macos/Info.ext.plist"]

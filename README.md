@@ -49,6 +49,31 @@ first build. To build only the command line tool (no GPUI, much faster):
 cargo build --release -p slipdock-cli
 ```
 
+### macOS app bundle
+
+`cargo build` cannot make a `.app`; [cargo-bundle](https://github.com/burtonageo/cargo-bundle)
+does. Install it once, then run it **from the repository root**:
+
+```sh
+cargo install cargo-bundle --locked     # tested with 0.12.0
+cargo bundle --release -p slipdock-app --format osx
+# target/release/bundle/osx/Slipdock.app
+codesign --force --sign - target/release/bundle/osx/Slipdock.app
+cp -R target/release/bundle/osx/Slipdock.app /Applications/
+```
+
+The settings are in `crates/slipdock-app/Cargo.toml` under
+`[package.metadata.bundle]`. Their paths are relative to the repository root.
+Started from another folder, cargo-bundle does not find the icon or
+`Info.ext.plist` and leaves them out without an error.
+
+cargo-bundle does not sign the bundle, so the `codesign` line seals it with an
+ad hoc signature. That is enough for the Mac that built it. To give the app
+to someone else it needs a Developer ID signature and notarization.
+
+The icon is `crates/slipdock-app/macos/icon.svg`; cargo-bundle converts it.
+Without `--format osx` it also builds `Slipdock.dmg`.
+
 ## Quick start
 
 ```sh
@@ -155,6 +180,13 @@ Cancel button; the report at the end is the same text the command line prints.
 
 Known limit: closing the app while a tool runs does not stop the tool. Use
 Cancel first.
+
+On macOS, `slipdock app` looks for `slipdock-app` beside `slipdock` and on
+`PATH`. It does not look in `/Applications`, so start an installed
+`Slipdock.app` from Finder, Spotlight or `open -a Slipdock`. An app started
+that way does not see variables set only in your shell
+(`SLIPDOCK_CONFIG_DIR`, `XDG_CONFIG_HOME`), and its `PATH` is the one in the
+bundle's `Info.plist`.
 
 ## Code layout
 
