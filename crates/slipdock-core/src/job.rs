@@ -201,6 +201,8 @@ pub struct DumpPlan {
     pub out: PathBuf,
     profile: Profile,
     program: PathBuf,
+    /// The `PATH` for mydumper, when it must be told where zstd is.
+    tool_path: Option<String>,
     omit_file: Option<PathBuf>,
     options: DumpOptions,
 }
@@ -222,6 +224,10 @@ pub fn plan_dump(ctx: &Context, options: DumpOptions, timestamp: &str) -> Result
         None => profile.need_dump_dir(ctx.home.as_deref())?,
     };
     let program = tools::resolve(Tool::Mydumper, &ctx.settings, &ctx.dirs)?;
+    // mydumper starts zstd to compress, and stops at once if it cannot find
+    // it. Checked here, before anything is written.
+    let zstd = tools::resolve(Tool::Zstd, &ctx.settings, &ctx.dirs)?;
+    let tool_path = tools::path_with(&zstd, &ctx.dirs);
 
     fs::create_dir_all(&root).map_err(Error::io_at("cannot create", &root))?;
     let root = root
@@ -267,6 +273,7 @@ pub fn plan_dump(ctx: &Context, options: DumpOptions, timestamp: &str) -> Result
         out,
         profile,
         program,
+        tool_path,
         omit_file,
         options,
     })
@@ -286,6 +293,7 @@ impl DumpPlan {
             log: &log,
             extra_args: &options.extra_args,
             tls_off: self.profile.tls_verify_off(),
+            path: self.tool_path.as_deref(),
         });
         Ok(Prepared {
             invocation,
@@ -326,6 +334,8 @@ pub struct LoadPlan {
     pub server: String,
     profile: Profile,
     program: PathBuf,
+    /// The `PATH` for myloader, when it must be told where zstd is.
+    tool_path: Option<String>,
     dir: PathBuf,
     tables: usize,
     options: LoadOptions,
@@ -360,6 +370,14 @@ pub fn plan_load(ctx: &Context, options: LoadOptions) -> Result<LoadPlan> {
         })?,
     };
     let program = tools::resolve(Tool::Myloader, &ctx.settings, &ctx.dirs)?;
+    // myloader starts zstd to read compressed files. A dump without any
+    // (made elsewhere) loads without it.
+    let tool_path = if dumps::is_zstd(dir) {
+        let zstd = tools::resolve(Tool::Zstd, &ctx.settings, &ctx.dirs)?;
+        tools::path_with(&zstd, &ctx.dirs)
+    } else {
+        None
+    };
     let dir = dir
         .canonicalize()
         .map_err(Error::io_at("cannot open", dir))?;
@@ -398,6 +416,7 @@ pub fn plan_load(ctx: &Context, options: LoadOptions) -> Result<LoadPlan> {
         server: profile.target(),
         profile,
         program,
+        tool_path,
         dir,
         tables,
         options,
@@ -422,6 +441,7 @@ impl LoadPlan {
             log: &log,
             extra_args: &options.extra_args,
             tls_off: self.profile.tls_verify_off(),
+            path: self.tool_path.as_deref(),
         });
         Ok(Prepared {
             invocation,
@@ -665,6 +685,8 @@ verbose = 1
 dump-dir = ~/dumps
 ";
 
+    const ZSTD_VERSION: &str = r#"echo "*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***""#;
+
     fn version_only(name: &str) -> String {
         format!(r#"echo "{name} v1.0.19-1, built against MariaDB 10.8.8 with SSL support""#)
     }
@@ -684,6 +706,7 @@ dump-dir = ~/dumps
         let (ctx, secrets) = context(&root);
         fake_tool(&root.join("bin"), "mydumper", &version_only("mydumper"));
         fake_tool(&root.join("bin"), "myloader", &version_only("myloader"));
+        fake_tool(&root.join("bin"), "zstd", ZSTD_VERSION);
         let cnf = write_profile(&ctx, "example", profile_text);
         Setup {
             temp,
@@ -925,6 +948,47 @@ dump-dir = ~/dumps
     }
 
     #[test]
+    fn a_load_needs_zstd_only_for_a_compressed_dump() {
+        let mut s = setup(PROFILE);
+        let home = s.ctx.home.clone().unwrap();
+        let compressed = home.join("dumps/example_db__example__20260101-000000");
+        dump_fixture(&compressed, true);
+        let plain = home.join("dumps/example_db__example__20260102-000000");
+        fs::create_dir_all(&plain).unwrap();
+        for file in ["metadata", "example_db-schema-create.sql"] {
+            fs::write(plain.join(file), "x").unwrap();
+        }
+        let env = |ctx: &Context, dir: &Path| {
+            let plan = plan_load(ctx, load_options(dir))?;
+            Ok::<_, Error>(plan.prepare(ctx, TS)?.invocation.env)
+        };
+
+        // zstd is off PATH, in a folder Slipdock also looks in.
+        let bin = s.ctx.dirs.path[0].clone();
+        let brew = bin.with_file_name("brew-bin");
+        fs::create_dir_all(&brew).unwrap();
+        fs::rename(bin.join("zstd"), brew.join("zstd")).unwrap();
+        s.ctx.dirs.usual = vec![brew.clone()];
+        assert_eq!(
+            env(&s.ctx, &compressed).unwrap(),
+            [(
+                "PATH".to_string(),
+                format!("{}:{}", brew.display(), bin.display())
+            )]
+        );
+        assert!(env(&s.ctx, &plain).unwrap().is_empty());
+
+        // No zstd anywhere: only the compressed dump is refused.
+        fs::remove_file(brew.join("zstd")).unwrap();
+        let error = env(&s.ctx, &compressed).err().unwrap().to_string();
+        assert_eq!(
+            error,
+            "zstd was not found. See: slipdock tools install zstd"
+        );
+        assert!(env(&s.ctx, &plain).unwrap().is_empty());
+    }
+
+    #[test]
     fn load_plan_takes_the_target_from_the_dump_and_builds_the_command() {
         let s = setup(PROFILE);
         let dir = s
@@ -1066,6 +1130,59 @@ exit {exit}"#,
             .unwrap();
         let outcome = run_to_end(&prepared);
         (prepared, outcome)
+    }
+
+    /// An app started from the Dock has a short PATH. mydumper is found in a
+    /// usual folder all the same, but it looks for zstd on its own PATH.
+    #[test]
+    fn mydumper_gets_a_path_that_leads_to_zstd() {
+        let mut s = setup(PROFILE);
+        let bin = s.ctx.dirs.path[0].clone();
+        let brew = bin.with_file_name("brew-bin");
+        fs::rename(bin.join("zstd"), {
+            fs::create_dir_all(&brew).unwrap();
+            brew.join("zstd")
+        })
+        .unwrap();
+        // What a short PATH still has, and the folder Slipdock also looks in.
+        s.ctx.dirs.path = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        s.ctx.dirs.usual = vec![bin.clone(), brew.clone()];
+        let body = format!(
+            r#"if [ "$1" = --version ]; then {version}; exit 0; fi
+while [ $# -gt 0 ]; do
+  case "$1" in --outputdir) out="$2"; shift ;; esac
+  shift
+done
+if ! command -v zstd >/dev/null; then echo "zstd was not found in PATH" >&2; exit 1; fi
+mkdir -p "$out" && echo done > "$out/metadata""#,
+            version = version_only("mydumper"),
+        );
+        fake_tool(&bin, "mydumper", &body);
+
+        let (prepared, outcome) = real_dump(&s, None);
+        assert_eq!(
+            prepared.invocation.env,
+            [(
+                "PATH".to_string(),
+                format!("{}:/usr/bin:/bin", brew.display())
+            )]
+        );
+        assert_eq!(outcome.output_head, [] as [&str; 0]);
+        assert!(prepared.report(&outcome).success);
+    }
+
+    #[test]
+    fn zstd_on_the_path_changes_nothing_and_a_missing_one_stops_the_dump() {
+        let s = setup(PROFILE);
+        let plan = plan_dump(&s.ctx, dump_options(), TS).unwrap();
+        assert!(plan.prepare(&s.ctx).unwrap().invocation.env.is_empty());
+
+        fs::remove_file(s.ctx.dirs.path[0].join("zstd")).unwrap();
+        let error = plan_dump(&s.ctx, dump_options(), TS).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "zstd was not found. See: slipdock tools install zstd"
+        );
     }
 
     #[test]

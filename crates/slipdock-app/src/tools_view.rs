@@ -1,4 +1,4 @@
-//! Setup / Tools: where mydumper, myloader and mysql are, and what to do
+//! Setup / Tools: where mydumper, myloader, mysql and zstd are, and what to do
 //! when one is missing or broken.
 
 use std::path::PathBuf;

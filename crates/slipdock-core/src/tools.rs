@@ -1,4 +1,4 @@
-//! Finding and checking the external tools: mydumper, myloader, mysql.
+//! Finding and checking the external tools: mydumper, myloader, mysql, zstd.
 //!
 //! Slipdock never downloads a tool. It looks for what is installed, checks
 //! that each candidate really works, and otherwise shows how to install it
@@ -28,10 +28,15 @@ pub enum Tool {
     Mydumper,
     Myloader,
     Mysql,
+    /// Slipdock does not start zstd itself: mydumper and myloader do, to
+    /// write and read compressed files. They look for it by name on their
+    /// `PATH`, so Slipdock finds it and hands them its folder (see
+    /// [`path_with`]).
+    Zstd,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 3] = [Tool::Mydumper, Tool::Myloader, Tool::Mysql];
+    pub const ALL: [Tool; 4] = [Tool::Mydumper, Tool::Myloader, Tool::Mysql, Tool::Zstd];
 
     /// The name used in settings and on the command line.
     pub fn name(self) -> &'static str {
@@ -39,6 +44,7 @@ impl Tool {
             Tool::Mydumper => "mydumper",
             Tool::Myloader => "myloader",
             Tool::Mysql => "mysql",
+            Tool::Zstd => "zstd",
         }
     }
 
@@ -53,6 +59,7 @@ impl Tool {
             Tool::Mydumper => &["mydumper"],
             Tool::Myloader => &["myloader"],
             Tool::Mysql => &["mysql", "mariadb"],
+            Tool::Zstd => &["zstd"],
         }
     }
 
@@ -62,6 +69,7 @@ impl Tool {
             Tool::Mydumper => "dumps a database",
             Tool::Myloader => "loads a dump",
             Tool::Mysql => "optional: lists databases and tables to pick from",
+            Tool::Zstd => "compresses dumps; mydumper and myloader start it",
         }
     }
 }
@@ -179,7 +187,7 @@ impl Working {
     /// first one with all the options Slipdock uses. Older versions are
     /// allowed, not blocked: the run will show what the tool rejects.
     pub fn version_warning(&self, tool: Tool) -> Option<String> {
-        if tool == Tool::Mysql {
+        if !matches!(tool, Tool::Mydumper | Tool::Myloader) {
             return None;
         }
         let version = Version::parse(&self.version)?;
@@ -205,6 +213,9 @@ pub enum Problem {
     /// A mysql that ignores `--defaults-file`: Slipdock could not hand it
     /// the profile.
     RejectsDefaultsFile,
+    /// A zstd under another file name. mydumper and myloader look for a
+    /// file called `zstd`, so they would not find this one.
+    NotNamedZstd,
 }
 
 impl fmt::Display for Problem {
@@ -222,6 +233,12 @@ impl fmt::Display for Problem {
                     "does not accept --defaults-file (looks like a wrapper script)"
                 )
             }
+            Problem::NotNamedZstd => {
+                write!(
+                    f,
+                    "must be a file named zstd: mydumper looks for it by that name"
+                )
+            }
         }
     }
 }
@@ -234,6 +251,7 @@ pub fn probe(tool: Tool, path: &Path) -> std::result::Result<Working, Problem> {
     let version = banner.lines().find_map(|line| match tool {
         Tool::Mydumper | Tool::Myloader => mydumper_version(line.trim()),
         Tool::Mysql => mysql_version(line.trim()),
+        Tool::Zstd => zstd_version(line.trim()),
     });
     let Some(version) = version else {
         let first_line = banner.lines().next().unwrap_or("").trim().to_string();
@@ -241,6 +259,9 @@ pub fn probe(tool: Tool, path: &Path) -> std::result::Result<Working, Problem> {
     };
     if tool == Tool::Mysql {
         check_reads_defaults_file(path)?;
+    }
+    if tool == Tool::Zstd && path.file_name().is_none_or(|name| name != "zstd") {
+        return Err(Problem::NotNamedZstd);
     }
     Ok(Working { version })
 }
@@ -284,6 +305,19 @@ fn mysql_version(line: &str) -> Option<String> {
         .or_else(|| after("Ver"))
         .filter(|version| version.starts_with(|c: char| c.is_ascii_digit()))
         .map(str::to_string)
+}
+
+/// `*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***` -> `1.5.7`.
+/// Older releases say `*** zstd command line interface 64-bits v1.4.4, ...`.
+fn zstd_version(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("zstandard") && !lower.contains("zstd") {
+        return None;
+    }
+    line.split_whitespace().find_map(|word| {
+        let version = word.strip_prefix('v')?.trim_end_matches(',');
+        Version::parse(version).map(|_| version.to_string())
+    })
 }
 
 /// Slipdock passes the profile to mysql as `--defaults-file=<file>`. Some
@@ -419,6 +453,27 @@ pub fn resolve(tool: Tool, settings: &Settings, dirs: &SearchDirs) -> Result<Pat
     })
 }
 
+/// The `PATH` to give mydumper or myloader so that it finds `zstd`.
+///
+/// `None` when the `PATH` Slipdock was started with already leads to this
+/// zstd first: then nothing is changed. That is the normal case in a shell.
+/// An app started from the Dock often has a short `PATH` without the package
+/// manager's folder; then the folder of `zstd` is put in front of it.
+pub fn path_with(zstd: &Path, dirs: &SearchDirs) -> Option<String> {
+    let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let on_path = dirs
+        .path
+        .iter()
+        .map(|dir| dir.join("zstd"))
+        .find(|path| platform::is_executable(path));
+    if on_path.is_some_and(|found| real(&found) == real(zstd)) {
+        return None;
+    }
+    let folder = zstd.parent()?.to_path_buf();
+    let joined = std::env::join_paths(std::iter::once(&folder).chain(&dirs.path)).ok()?;
+    Some(joined.to_string_lossy().into_owned())
+}
+
 // --- Install plan ------------------------------------------------------------------
 
 /// How to get a missing tool. Slipdock runs a command only when it needs no
@@ -439,11 +494,7 @@ pub const MYDUMPER_RELEASES: &str = "https://github.com/mydumper/mydumper/releas
 
 pub fn install_plan(tool: Tool, os: Os, managers: &[PackageManager]) -> InstallPlan {
     let has = |manager| managers.contains(&manager);
-    // mydumper and myloader come in one package.
-    let brew_package = match tool {
-        Tool::Mydumper | Tool::Myloader => "mydumper",
-        Tool::Mysql => "mysql-client",
-    };
+    let brew_package = brew_package(tool);
     match os {
         Os::Windows => InstallPlan::Unsupported(
             "mydumper publishes no Windows builds. Use Slipdock inside WSL, where it works as on Linux."
@@ -458,6 +509,15 @@ pub fn install_plan(tool: Tool, os: Os, managers: &[PackageManager]) -> InstallP
             format!("brew install {brew_package}"),
         ]),
         Os::Linux | Os::Other => InstallPlan::Steps(linux_steps(tool, managers)),
+    }
+}
+
+/// The Homebrew package. mydumper and myloader come in one.
+fn brew_package(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Mydumper | Tool::Myloader => "mydumper",
+        Tool::Mysql => "mysql-client",
+        Tool::Zstd => "zstd",
     }
 }
 
@@ -505,13 +565,23 @@ fn linux_steps(tool: Tool, managers: &[PackageManager]) -> Vec<String> {
                 );
             }
         }
+        Tool::Zstd => {
+            if has(PackageManager::Apt) {
+                steps.push("sudo apt-get install zstd".to_string());
+            }
+            if has(PackageManager::Dnf) {
+                steps.push("sudo dnf install zstd".to_string());
+            }
+            if has(PackageManager::Pacman) {
+                steps.push("sudo pacman -S zstd".to_string());
+            }
+            if steps.is_empty() {
+                steps.push("Install zstd with your package manager".to_string());
+            }
+        }
     }
     if has(PackageManager::Homebrew) {
-        let package = if tool == Tool::Mysql {
-            "mysql-client"
-        } else {
-            "mydumper"
-        };
+        let package = brew_package(tool);
         steps.push(format!(
             "or, with Homebrew on Linux: brew install {package}"
         ));
@@ -588,6 +658,17 @@ esac"#;
         );
         assert_eq!(banner("usage: something"), None);
 
+        assert_eq!(
+            zstd_version("*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***").as_deref(),
+            Some("1.5.7")
+        );
+        assert_eq!(
+            zstd_version("*** zstd command line interface 64-bits v1.4.4, by Yann Collet ***")
+                .as_deref(),
+            Some("1.4.4")
+        );
+        assert_eq!(zstd_version("gzip v1.2.3"), None);
+
         assert!(Version::parse("1.0.19-1").unwrap() == Version::VERIFIED);
         assert!(Version::parse("0.16.7-5").unwrap() < Version::VERIFIED);
         assert_eq!(Version::parse("abc"), None);
@@ -645,6 +726,50 @@ esac"#;
 
         let missing = probe(Tool::Mydumper, &temp.path().join("nope")).unwrap_err();
         assert!(matches!(missing, Problem::CannotRun(_)));
+    }
+
+    const ZSTD: &str = r#"echo "*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***""#;
+
+    #[test]
+    fn zstd_must_keep_its_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let zstd = fake(temp.path(), "zstd", ZSTD);
+        assert_eq!(probe(Tool::Zstd, &zstd).unwrap().version, "1.5.7");
+        assert_eq!(
+            probe(Tool::Zstd, &zstd)
+                .unwrap()
+                .version_warning(Tool::Zstd),
+            None
+        );
+
+        let renamed = fake(temp.path(), "zstd-1.5", ZSTD);
+        let problem = probe(Tool::Zstd, &renamed).unwrap_err();
+        assert_eq!(problem, Problem::NotNamedZstd);
+        assert_eq!(
+            problem.to_string(),
+            "must be a file named zstd: mydumper looks for it by that name"
+        );
+    }
+
+    #[test]
+    fn the_tools_get_a_path_only_when_theirs_would_not_find_zstd() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let on_path = fake(&root.join("bin"), "zstd", ZSTD);
+        let elsewhere = fake(&root.join("keg"), "zstd", ZSTD);
+        let search = dirs(&[&root.join("empty"), &root.join("bin")], &[]);
+
+        assert_eq!(path_with(&on_path, &search), None);
+        // Another zstd comes first on PATH, or none is there at all.
+        let expected = |tail: &[&str]| {
+            let mut all = vec![root.join("keg")];
+            all.extend(tail.iter().map(|dir| root.join(dir)));
+            let joined = std::env::join_paths(all).unwrap();
+            Some(joined.to_string_lossy().into_owned())
+        };
+        assert_eq!(path_with(&elsewhere, &search), expected(&["empty", "bin"]));
+        let short = dirs(&[&root.join("empty")], &[]);
+        assert_eq!(path_with(&elsewhere, &short), expected(&["empty"]));
     }
 
     #[test]

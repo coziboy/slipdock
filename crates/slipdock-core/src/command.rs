@@ -39,6 +39,14 @@ impl Invocation {
         }
     }
 
+    /// Sets `PATH` for the tool, when one is given (see `tools::path_with`).
+    fn path(mut self, path: Option<&str>) -> Self {
+        if let Some(path) = path {
+            self.env.push(("PATH".to_string(), path.to_string()));
+        }
+        self
+    }
+
     fn arg(mut self, arg: impl Into<OsString>) -> Self {
         self.args.push(arg.into());
         self
@@ -101,10 +109,13 @@ pub struct Dump<'a> {
     /// Arguments after `--`, passed on unchanged.
     pub extra_args: &'a [String],
     pub tls_off: bool,
+    /// The `PATH` mydumper needs to find `zstd`, when its own would not do.
+    pub path: Option<&'a str>,
 }
 
 pub fn mydumper(dump: &Dump) -> Invocation {
     let mut invocation = Invocation::new(dump.program, dump.tls_off)
+        .path(dump.path)
         .args(["--defaults-file".as_ref(), dump.defaults_file.as_os_str()]);
     if let Some(omit) = dump.omit_file {
         invocation = invocation.args(["--omit-from-file".as_ref(), omit.as_os_str()]);
@@ -127,10 +138,13 @@ pub struct Load<'a> {
     pub log: &'a Path,
     pub extra_args: &'a [String],
     pub tls_off: bool,
+    /// The `PATH` myloader needs to find `zstd`, when its own would not do.
+    pub path: Option<&'a str>,
 }
 
 pub fn myloader(load: &Load) -> Invocation {
     Invocation::new(load.program, load.tls_off)
+        .path(load.path)
         .args(["--defaults-file".as_ref(), load.defaults_file.as_os_str()])
         .args(["--directory".as_ref(), load.dir.as_os_str()])
         .args(["--database", load.database])
@@ -270,6 +284,7 @@ mod tests {
             log: Path::new("/dumps/example_db__example__20260102-030405.log"),
             extra_args: &[],
             tls_off: false,
+            path: None,
         }
     }
 
@@ -343,6 +358,7 @@ mod tests {
             ),
             extra_args: &[],
             tls_off: false,
+            path: None,
         }
     }
 
@@ -415,6 +431,28 @@ mod tests {
       --logfile /dumps/example_db__example__20260102-030405.log \\
       --where 'id > 5'"
         );
+    }
+
+    #[test]
+    fn a_path_for_the_tool_is_set_and_shown() {
+        let invocation = mydumper(&Dump {
+            path: Some("/opt/tools/bin:/usr/bin"),
+            ..dump()
+        });
+        assert_eq!(
+            invocation.env,
+            [("PATH".to_string(), "/opt/tools/bin:/usr/bin".to_string())]
+        );
+        assert!(
+            invocation
+                .preview()
+                .starts_with("  env PATH=/opt/tools/bin:/usr/bin /tools/mydumper")
+        );
+        let invocation = myloader(&Load {
+            path: Some("/opt/tools/bin"),
+            ..load()
+        });
+        assert_eq!(invocation.env.len(), 1);
     }
 
     #[test]

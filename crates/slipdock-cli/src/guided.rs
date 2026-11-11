@@ -19,7 +19,7 @@ pub fn run(ctx: &Context) -> Result<i32> {
         "dumps     list dumps",
         "profiles  list profiles",
         "init      create a profile",
-        "tools     check mydumper, myloader and mysql",
+        "tools     check mydumper, myloader, mysql and zstd",
     ]
     .map(String::from);
     let Some(action) = ui::pick("slipdock", &actions) else {

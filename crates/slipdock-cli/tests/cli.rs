@@ -46,13 +46,15 @@ impl Sandbox {
         .unwrap();
         sandbox.fake_tool("mydumper", "");
         sandbox.fake_tool("myloader", "");
+        sandbox.fake_tool("zstd", "");
         // Tool paths are fixed in the settings, so the tests never find the
         // tools installed on this machine.
         fs::write(
             sandbox.config().join("settings.toml"),
             format!(
                 "[tools.mydumper]\nsource = \"path\"\npath = \"{0}/bin/mydumper\"\n\n\
-                 [tools.myloader]\nsource = \"path\"\npath = \"{0}/bin/myloader\"\n",
+                 [tools.myloader]\nsource = \"path\"\npath = \"{0}/bin/myloader\"\n\n\
+                 [tools.zstd]\nsource = \"path\"\npath = \"{0}/bin/zstd\"\n",
                 sandbox.root.display()
             ),
         )
@@ -103,8 +105,14 @@ impl Sandbox {
             .env_clear()
             .env("SLIPDOCK_CONFIG_DIR", self.config())
             .env("HOME", &self.root)
-            .env("PATH", "/usr/bin:/bin");
+            // The fake zstd is on PATH, as a real one is in a shell, so
+            // the tools get no PATH of their own.
+            .env("PATH", self.path());
         command
+    }
+
+    fn path(&self) -> String {
+        format!("{}/bin:/usr/bin:/bin", self.root.display())
     }
 }
 

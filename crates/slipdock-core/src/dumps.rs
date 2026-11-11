@@ -174,6 +174,12 @@ pub fn is_complete(dir: &Path) -> bool {
     dir.join("metadata").is_file()
 }
 
+/// True when the dump has files compressed with zstd. myloader needs the
+/// `zstd` program to read those.
+pub fn is_zstd(dir: &Path) -> bool {
+    file_names(dir).iter().any(|name| name.ends_with(".zst"))
+}
+
 /// Tables (and views) in a dump: one `<db>.<table>-schema.sql[.zst]` each.
 /// `<db>-schema-create.sql` is the database itself and does not count.
 pub fn table_count(dir: &Path) -> usize {

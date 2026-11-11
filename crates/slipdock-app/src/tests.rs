@@ -64,6 +64,7 @@ fn sandbox(root: &Path) -> Context {
     )
     .unwrap();
     fake_tool(&root.join("bin"), "mydumper", "exit 1");
+    fake_tool(&root.join("bin"), "zstd", "");
     // A mysql client whose server answers with one database and no tables.
     let mysql = root.join("bin/mysql");
     let script = r#"#!/bin/sh

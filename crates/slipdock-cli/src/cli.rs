@@ -98,7 +98,7 @@ pub enum Command {
         profile: Option<String>,
     },
 
-    /// Show path, version and status of mydumper, myloader and mysql
+    /// Show path, version and status of mydumper, myloader, mysql and zstd
     Tools {
         #[command(subcommand)]
         command: Option<ToolsCommand>,
@@ -151,6 +151,7 @@ pub enum ToolName {
     Mydumper,
     Myloader,
     Mysql,
+    Zstd,
 }
 
 #[derive(Debug, Subcommand)]

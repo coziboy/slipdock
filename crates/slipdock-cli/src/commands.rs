@@ -241,6 +241,7 @@ impl From<ToolName> for Tool {
             ToolName::Mydumper => Tool::Mydumper,
             ToolName::Myloader => Tool::Myloader,
             ToolName::Mysql => Tool::Mysql,
+            ToolName::Zstd => Tool::Zstd,
         }
     }
 }
@@ -346,7 +347,7 @@ fn tools_install(ctx: &Context, only: Option<Tool>) -> Result<i32> {
             .collect(),
     };
     if wanted.is_empty() {
-        println!("Nothing to install: mydumper, myloader and mysql all work.");
+        println!("Nothing to install: mydumper, myloader, mysql and zstd all work.");
         return Ok(OK);
     }
     let mut search = ctx.dirs.path.clone();
