@@ -1,0 +1,24 @@
+[package]
+name = "slipdock-app"
+description = "Desktop app for dumping and loading MySQL/MariaDB databases with mydumper and myloader."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "slipdock-app"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+slipdock-core.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+# gpui-kit's test-support feature also resolves its second backend
+# (gpui-fast), which pins these two crates exactly. Naming the same versions
+# here lets Cargo pick one version that suits both backends.
+taffy = "=0.15.0"
+unicode-properties = "=0.1.3"

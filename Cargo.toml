@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/slipdock-core", "crates/slipdock-cli"]
+members = ["crates/slipdock-core", "crates/slipdock-cli", "crates/slipdock-app"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 
 # Every version is pinned exactly ("=") and Cargo.lock is committed, so a
@@ -16,6 +16,9 @@ slipdock-core = { path = "crates/slipdock-core", version = "=0.1.0" }
 anstream = "=1.0.0"
 anstyle = "=1.0.14"
 clap = { version = "=4.6.7", features = ["derive", "env"] }
+# The GPUI stack. gpui-kit pulls gpui-component and gpui-pre, a snapshot of
+# Zed's GPUI published by the gpui-component maintainers.
+gpui-kit = "=0.9.1"
 clap_complete = { version = "=4.6.11", features = ["unstable-dynamic"] }
 jiff = "=0.2.42"
 keyring = "=4.2.0"

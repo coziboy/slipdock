@@ -1,0 +1,6 @@
+# The GPUI crates need a newer compiler than Rust 1.97. Pinning the exact
+# version here makes rustup fetch it for this folder only; your default
+# toolchain is not changed.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
