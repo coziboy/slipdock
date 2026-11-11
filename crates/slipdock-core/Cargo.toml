@@ -1,0 +1,16 @@
+[package]
+name = "slipdock-core"
+description = "Shared logic of Slipdock: profiles, tools, commands and runs for mydumper/myloader."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

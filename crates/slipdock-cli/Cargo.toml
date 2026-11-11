@@ -1,0 +1,14 @@
+[package]
+name = "slipdock-cli"
+description = "Command line tool for dumping and loading MySQL/MariaDB databases with mydumper and myloader."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "slipdock"
+path = "src/main.rs"
+
+[dependencies]
+slipdock-core.workspace = true
