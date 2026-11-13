@@ -1,0 +1,338 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-13T00:00:00Z",
+  "title": "Design System: Slipdock",
+  "extensions": {
+    "colorMeta": {
+      "ink": {
+        "role": "primary",
+        "displayName": "Ink",
+        "canonical": "#17161A"
+      },
+      "ground": {
+        "role": "neutral",
+        "displayName": "Ground",
+        "canonical": "#F5F6F8"
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Panel",
+        "canonical": "#FFFFFF"
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Rule",
+        "canonical": "#D9DBE1"
+      },
+      "edge": {
+        "role": "neutral",
+        "displayName": "Edge",
+        "canonical": "#8E8C98"
+      },
+      "dim": {
+        "role": "neutral",
+        "displayName": "Dim",
+        "canonical": "#5E5C66"
+      },
+      "quiet": {
+        "role": "neutral",
+        "displayName": "Quiet",
+        "canonical": "#ECEDF1"
+      },
+      "quiet-hover": {
+        "role": "neutral",
+        "displayName": "Quiet, hovered",
+        "canonical": "#E2E3E9"
+      },
+      "rail": {
+        "role": "neutral",
+        "displayName": "Rail",
+        "canonical": "#25222B"
+      },
+      "rail-hover": {
+        "role": "neutral",
+        "displayName": "Rail, hovered",
+        "canonical": "#2D2934"
+      },
+      "rail-chosen": {
+        "role": "neutral",
+        "displayName": "Rail, chosen",
+        "canonical": "#403A4C"
+      },
+      "rail-ink": {
+        "role": "neutral",
+        "displayName": "Rail ink",
+        "canonical": "#ECEAF1"
+      },
+      "rail-dim": {
+        "role": "neutral",
+        "displayName": "Rail dim",
+        "canonical": "#B1ACBD"
+      },
+      "ink-hover": {
+        "role": "primary",
+        "displayName": "Ink, hovered",
+        "canonical": "#34323A"
+      },
+      "ink-active": {
+        "role": "primary",
+        "displayName": "Ink, pressed",
+        "canonical": "#000000"
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "Danger",
+        "canonical": "#C92434"
+      },
+      "danger-hover": {
+        "role": "tertiary",
+        "displayName": "Danger, hovered",
+        "canonical": "#B01E2D"
+      },
+      "danger-active": {
+        "role": "tertiary",
+        "displayName": "Danger, pressed",
+        "canonical": "#98192A"
+      },
+      "success": {
+        "role": "tertiary",
+        "displayName": "Success",
+        "canonical": "#10713C"
+      },
+      "warning": {
+        "role": "tertiary",
+        "displayName": "Warning",
+        "canonical": "#964F00"
+      },
+      "focus": {
+        "role": "tertiary",
+        "displayName": "Focus",
+        "canonical": "#2B6FE0"
+      },
+      "band-teal": {
+        "role": "secondary",
+        "displayName": "Band 0: teal",
+        "canonical": "#0B8F8A"
+      },
+      "band-violet": {
+        "role": "secondary",
+        "displayName": "Band 1: violet",
+        "canonical": "#7650D8"
+      },
+      "band-olive": {
+        "role": "secondary",
+        "displayName": "Band 2: olive",
+        "canonical": "#857F00"
+      },
+      "band-magenta": {
+        "role": "secondary",
+        "displayName": "Band 3: magenta",
+        "canonical": "#C93A96"
+      },
+      "band-green": {
+        "role": "secondary",
+        "displayName": "Band 4: green",
+        "canonical": "#4F8A12"
+      },
+      "band-purple": {
+        "role": "secondary",
+        "displayName": "Band 5: purple",
+        "canonical": "#9B3FB5"
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "The name of a screen, once at its top."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "The name \"Slipdock\" on the rail."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "The lines of a summary and a report, and the title of a dump row."
+      },
+      "hint": {
+        "displayName": "Hint",
+        "purpose": "Explanations and field labels in Dim; the size of navigation items and notice text."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "The small uppercase title of a card or of a group of fields."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Names of profiles, databases, tables, folders and paths; commands and logs."
+      }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": [
+      {
+        "name": "compact",
+        "value": "760px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The action a form is for: \"Run dump\", \"Save\". An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<button class=\"ds-btn-primary\">Run dump</button>",
+      "css": ".ds-btn-primary { background: #17161A; color: #FFFFFF; border: none; border-radius: 4px; padding: 6px 12px; font-family: system-ui; font-size: 14px; } .ds-btn-primary:hover { background: #34323A; } .ds-btn-primary:active { background: #000000; } .ds-btn-primary:focus-visible { outline: 2px solid #2B6FE0; outline-offset: 1px; }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "What destroys data: \"Load…\", \"Delete profile\". An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<button class=\"ds-btn-danger\">Load…</button>",
+      "css": ".ds-btn-danger { background: #C92434; color: #FFFFFF; border: none; border-radius: 4px; padding: 6px 12px; font-family: system-ui; font-size: 14px; } .ds-btn-danger:hover { background: #B01E2D; } .ds-btn-danger:active { background: #98192A; } .ds-btn-danger:focus-visible { outline: 2px solid #2B6FE0; outline-offset: 1px; }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Every second action: \"Show command\", \"Test connection\". An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<button class=\"ds-btn-outline\">Show command</button>",
+      "css": ".ds-btn-outline { background: #FFFFFF; color: #17161A; border: 1px solid #8E8C98; border-radius: 4px; padding: 5px 12px; font-family: system-ui; font-size: 14px; } .ds-btn-outline:hover { background: #ECEDF1; } .ds-btn-outline:focus-visible { outline: 2px solid #2B6FE0; outline-offset: 1px; }"
+    },
+    {
+      "name": "Profile Strip",
+      "kind": "custom",
+      "refersTo": "profile-strip",
+      "description": "The label that heads a form: the band of the chosen profile, its name, its server. An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<div class=\"ds-strip\"><div class=\"ds-strip-band\"></div><div class=\"ds-strip-text\"><b>staging</b><span>db.example.com:3306</span></div></div>",
+      "css": ".ds-strip { display: flex; align-items: stretch; overflow: hidden; background: #FFFFFF; border: 1px solid #D9DBE1; border-radius: 4px; } .ds-strip-band { width: 44px; min-height: 40px; flex-shrink: 0; background: #0B8F8A; } .ds-strip-text { flex: 1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; column-gap: 16px; padding: 8px 16px; font-family: ui-monospace, monospace; font-size: 14px; color: #17161A; } .ds-strip-text span { color: #5E5C66; }"
+    },
+    {
+      "name": "Profile Choice",
+      "kind": "chip",
+      "refersTo": "button-outline",
+      "description": "One of the profiles to choose from: its band, then its name. The chosen one has a wider band, a bold name and an ink edge. An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<button class=\"ds-choice ds-choice-chosen\"><i style=\"background:#0B8F8A\"></i>staging</button> <button class=\"ds-choice\"><i style=\"background:#7650D8\"></i>local</button>",
+      "css": ".ds-choice { display: inline-flex; align-items: center; gap: 8px; background: #FFFFFF; color: #17161A; border: 1px solid #8E8C98; border-radius: 4px; padding: 5px 12px; font-family: ui-monospace, monospace; font-size: 14px; } .ds-choice i { width: 10px; height: 16px; border-radius: 1px; } .ds-choice-chosen { border-color: #17161A; font-weight: 700; } .ds-choice-chosen i { width: 28px; } .ds-choice:focus-visible { outline: 2px solid #2B6FE0; outline-offset: 1px; }"
+    },
+    {
+      "name": "Dump Row",
+      "kind": "custom",
+      "refersTo": "band-mark",
+      "description": "A dump as every list shows it: the band of its profile (broken in three when the dump is partial), the date, the folder name, and the size as five bars. An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<div class=\"ds-dump\"><div class=\"ds-band\"></div><div class=\"ds-dump-text\"><div class=\"ds-dump-title\">2 Jan 2026, 03:04</div><div class=\"ds-dump-folder\">example_db__staging__20260102-030405</div></div><div class=\"ds-dump-stats\">65 tables · 15M<span class=\"ds-bars\"><i></i><i></i><i class=\"ds-off\"></i><i class=\"ds-off\"></i><i class=\"ds-off\"></i></span></div></div><div class=\"ds-dump\"><div class=\"ds-band-partial\"><i></i><i></i><i></i></div><div class=\"ds-dump-text\"><div class=\"ds-dump-title\">1 Jan 2026, 22:10 <span class=\"ds-tag-warning\">partial</span></div><div class=\"ds-dump-folder\">example_db__staging__20260101-221000</div></div></div>",
+      "css": ".ds-dump { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #FFFFFF; border-top: 1px solid #D9DBE1; font-family: system-ui; color: #17161A; } .ds-band { width: 10px; height: 36px; flex-shrink: 0; border-radius: 1px; background: #0B8F8A; } .ds-band-partial { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; } .ds-band-partial i { width: 10px; height: 10px; border-radius: 1px; background: #0B8F8A; } .ds-dump-text { flex: 1; min-width: 0; } .ds-dump-title { font-size: 16px; font-weight: 500; } .ds-dump-folder { font-family: ui-monospace, monospace; font-size: 12px; color: #5E5C66; } .ds-dump-stats { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #5E5C66; } .ds-bars { display: flex; align-items: flex-end; gap: 2px; } .ds-bars i { width: 3px; background: #5E5C66; } .ds-bars i:nth-child(1) { height: 4px; } .ds-bars i:nth-child(2) { height: 6px; } .ds-bars i:nth-child(3) { height: 8px; } .ds-bars i:nth-child(4) { height: 10px; } .ds-bars i:nth-child(5) { height: 12px; } .ds-bars i.ds-off { background: #D9DBE1; } .ds-tag-warning { font-size: 12px; font-weight: 400; color: #964F00; border: 1px solid #964F00; border-radius: 4px; padding: 0 6px; }"
+    },
+    {
+      "name": "Card with a field",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "A bordered box that groups related fields, with a small title and the shared 110px label column. An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-title\">SOURCE</div><div class=\"ds-field\"><label>Database</label><input class=\"ds-input\" placeholder=\"Type to search the databases\"></div></div>",
+      "css": ".ds-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; background: #FFFFFF; border: 1px solid #D9DBE1; border-radius: 4px; font-family: system-ui; color: #17161A; } .ds-card-title { font-size: 12px; font-weight: 600; color: #5E5C66; } .ds-field { display: flex; flex-wrap: wrap; column-gap: 12px; row-gap: 4px; } .ds-field label { width: 110px; height: 32px; display: flex; align-items: center; flex-shrink: 0; font-size: 14px; color: #5E5C66; } .ds-input { flex: 1 1 220px; min-width: 0; height: 32px; padding: 0 12px; background: #FFFFFF; color: #17161A; border: 1px solid #8E8C98; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 14px; } .ds-input:focus-visible { outline: 2px solid #2B6FE0; outline-offset: 0; }"
+    },
+    {
+      "name": "Navigation Rail",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "The five screens on the graphite rail; the chosen one is filled, white and semibold. The icons of the app are left out here. An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<nav class=\"ds-rail\"><div class=\"ds-rail-brand\">Slipdock</div><div class=\"ds-rail-about\">MySQL dump and load</div><a class=\"ds-nav ds-nav-chosen\" tabindex=\"0\">Dump</a><a class=\"ds-nav\" tabindex=\"0\">Load</a><a class=\"ds-nav\" tabindex=\"0\">Dumps</a><a class=\"ds-nav\" tabindex=\"0\">Profiles</a><a class=\"ds-nav\" tabindex=\"0\">Tools</a></nav>",
+      "css": ".ds-rail { display: flex; flex-direction: column; gap: 4px; width: 210px; padding: 12px; background: #25222B; color: #ECEAF1; font-family: system-ui; } .ds-rail-brand { padding: 0 8px; font-size: 20px; font-weight: 700; } .ds-rail-about { padding: 0 8px 12px; font-size: 12px; color: #B1ACBD; } .ds-nav { padding: 6px 8px; border-radius: 4px; font-size: 14px; cursor: pointer; } .ds-nav:hover { background: #2D2934; } .ds-nav-chosen, .ds-nav-chosen:hover { background: #403A4C; color: #FFFFFF; font-weight: 600; } .ds-nav:focus-visible { outline: 2px solid #2B6FE0; }"
+    },
+    {
+      "name": "Option Row",
+      "kind": "custom",
+      "refersTo": "option-row",
+      "description": "A whole row that can be clicked. Chosen, it is on the quiet fill with an ink edge and a filled mark. An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<div class=\"ds-row ds-row-chosen\" tabindex=\"0\"><span class=\"ds-mark\"></span>staging</div><div class=\"ds-row\" tabindex=\"0\"><span class=\"ds-mark\"></span>local</div>",
+      "css": ".ds-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; margin-bottom: 8px; background: #FFFFFF; color: #17161A; border: 1px solid #D9DBE1; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 14px; cursor: pointer; } .ds-row:hover { background: #ECEDF1; } .ds-row-chosen { background: #ECEDF1; border-color: #17161A; } .ds-mark { width: 14px; height: 14px; flex-shrink: 0; box-sizing: border-box; border-radius: 50%; border: 1px solid #5E5C66; } .ds-row-chosen .ds-mark { border: 4px solid #17161A; } .ds-row:focus-visible { outline: 2px solid #2B6FE0; }"
+    },
+    {
+      "name": "Command Block",
+      "kind": "custom",
+      "refersTo": "mono-block",
+      "description": "A command or a log on the quiet fill, in the monospace font, one element per line. An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<div class=\"ds-mono\"><div>mydumper \\</div><div>  --database example_db \\</div><div>  --outputdir ~/dumps/example_db__staging__20260102-030405</div></div>",
+      "css": ".ds-mono { padding: 12px; background: #ECEDF1; color: #17161A; border: 1px solid #D9DBE1; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 14px; white-space: pre-wrap; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Cartridge Label",
+    "overview": "Slipdock's app looks like the colour-banded labels on backup tape cartridges. Every profile (one environment, such as `staging` or `local`) wears one flat colour band, and the band follows that profile's dumps to every screen, so the user knows the environment before reading a name. Everything else is plain: a graphite navigation rail, a cool white ground, white panels with 1px lines and 4px corners, and ink for text and for the main action. The system refuses the grey database client with one blue accent.\n\nThe medium is a Rust desktop app drawn with GPUI through the `gpui-kit` crate (gpui-component 0.9.1). There is no HTML and no CSS. The tokens above are Rust constants in `crates/slipdock-app/src/theme.rs` (`theme::INK`, `theme::BANDS` and so on), not CSS variables. `theme::apply` hands the same colours to the component library as a theme file, so the library's buttons, inputs and dialogs come out in the palette of what the screens draw themselves. The pixel sizes in this file are GPUI's size steps on its 16px base. The theme is light only. macOS and Linux have equal standing.\n\nThe window cannot be screenshotted in an agent session. Layout is checked by `cargo test -p slipdock-app`, which lays the screens out in a headless window. The user checks the look by hand.",
+    "keyCharacteristics": [
+      "One flat colour band per profile, repeated on every dump of that profile.",
+      "Ink, not a brand colour, for text and the main button.",
+      "Red only for what destroys data and for what failed.",
+      "Names of profiles, databases, tables, folders and paths in monospace, in the case they are written in.",
+      "No shadows, no gradients, and no tint of a band or a state colour.",
+      "Every row wraps; nothing runs out of a narrow window."
+    ],
+    "rules": [
+      {
+        "name": "The Band Rule",
+        "body": "A profile's band is a number stored in `settings.toml` (`Settings::bands` in `crates/slipdock-core/src/settings.rs`), so it does not change between starts. A new profile gets the lowest band that no profile has; with more than six profiles, the band that the fewest profiles have, so a seventh profile shares a band (`Settings::assign_bands`; the test `a_profile_keeps_its_band` holds it). A dump takes the band of the profile in its folder name (`dumps::profile_of`), not of the folder it lies in.",
+        "section": "colors"
+      },
+      {
+        "name": "The Solid Band Rule",
+        "body": "A band is always a solid block of its flat colour. It is never tinted, and never drawn as an outline. An outlined block in Dim means there is no band: the dump of a deleted profile, or a folder named by hand.",
+        "section": "colors"
+      },
+      {
+        "name": "The Readable Pair Rule",
+        "body": "Text has a contrast of at least 4.5:1 on its ground: on Panel, Ground and Quiet, on the rail in its three fills, and on the ink and danger buttons. Edge has at least 3:1 on Panel. Every band has at least 3:1 on Panel and on Quiet. The test `text_can_be_read_on_its_ground` in `theme.rs` fails when a new colour breaks this.",
+        "section": "colors"
+      },
+      {
+        "name": "The Band Is Not A State Rule",
+        "body": "Every band is at least 25° of hue from Danger, Success, Warning and Focus. Any two bands differ by at least 25° of hue. The test `a_band_is_not_taken_for_a_state` in `theme.rs` holds both.",
+        "section": "colors"
+      },
+      {
+        "name": "The Red Rule",
+        "body": "Red is for what destroys data and for what failed. Nothing else is red.",
+        "section": "colors"
+      },
+      {
+        "name": "The Written Case Rule",
+        "body": "A name of a profile, database, table, folder or path is in monospace and in the case it is written in. Profile names are file names, and on Linux `Staging` and `staging` are two profiles, so a name gets no capitals.",
+        "section": "typography"
+      },
+      {
+        "name": "The Platform Font Rule",
+        "body": "Never name a font family. Use the theme's UI font and its monospace font.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Rule",
+        "body": "No shadows and no gradients, on any surface, in any state.",
+        "section": "elevation"
+      },
+      {
+        "name": "The No Wash Rule",
+        "body": "In what the screens draw themselves, a band or a state colour is never thinned into a background (the component library keeps its own hover and disabled fills). A state is said by a 1px edge in its colour and an icon in its colour on a white panel; the verdict of a run is said by the edge of its card and the mark on its first line. Quiet is the only fill the screens draw, and it is neutral. The one colour let through is the focus blue behind selected text.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do put the profile's band beside every thing that belongs to a profile: its label, its row, its dumps, the confirmation of a load or a delete.",
+      "Do take a colour from a constant in `theme.rs` or from the theme (`cx.theme()`). A new colour goes in `theme.rs`, in the theme file, and in the pairs of `text_can_be_read_on_its_ground`.",
+      "Do say a state with a 1px edge and an icon in Success, Warning or Danger on a white panel.",
+      "Do set names of profiles, databases, tables, folders and paths in the theme's monospace font, in the case they are written in.",
+      "Do give every row that may be too wide `flex_wrap()` and every flexible child `min_w_0()`, and check the layout with `cargo test -p slipdock-app`.",
+      "Do use `theme::RADIUS` (4px) for every corner except a band block (1px).",
+      "Do say a second thing with shape when colour says the first: a partial dump's band is broken in three."
+    ],
+    "donts": [
+      "Don't draw a band as an outline, tint it, or use a band colour for a state. An outlined block means there is no band.",
+      "Don't add a band colour within 25° of hue of Danger, Success, Warning, Focus or another band.",
+      "Don't use red for anything that does not destroy data and did not fail.",
+      "Don't add a shadow, a gradient, or a tinted background of a band or state colour to anything a screen draws.",
+      "Don't name a font family. GPUI panics on one that is missing.",
+      "Don't write a profile, database or table name in capitals or in title case.",
+      "Don't look for CSS variables or add a dark theme by guessing. The tokens are Rust constants in `theme.rs`, and the app is light only.",
+      "Don't claim the window looks right from an agent session. The tests check layout; the user checks the look."
+    ]
+  }
+}
