@@ -295,7 +295,7 @@ fn tools_status(ctx: &Context) -> Result<i32> {
                     ui::bold(&format!("{:<9}", tool.name())),
                     status.problem().unwrap_or_default()
                 );
-                if tool != Tool::Mysql {
+                if !tool.optional() {
                     all_required_found = false;
                 }
             }
@@ -354,15 +354,10 @@ fn tools_install(ctx: &Context, only: Option<Tool>) -> Result<i32> {
     search.extend(ctx.dirs.usual.iter().cloned());
     let managers: Vec<PackageManager> = platform::package_managers(&search);
 
-    let mut done: Vec<InstallPlan> = Vec::new();
-    for tool in wanted {
-        let plan = tools::install_plan(tool, platform::current_os(), &managers);
-        // mydumper and myloader share one package: do not offer it twice.
-        if done.contains(&plan) {
-            continue;
-        }
-        anstream::println!("\n{}", ui::bold(tool.name()));
-        match &plan {
+    // mydumper and myloader share one package: it is offered once.
+    for install in tools::installs(&wanted, platform::current_os(), &managers) {
+        anstream::println!("\n{}", ui::bold(&install.names()));
+        match &install.plan {
             InstallPlan::Command { program, args } => {
                 println!("  {program} {}", args.join(" "));
                 if ui::is_interactive() && ui::ask_yes_no("Run this now?") {
@@ -387,7 +382,6 @@ fn tools_install(ctx: &Context, only: Option<Tool>) -> Result<i32> {
             }
             InstallPlan::Unsupported(why) => println!("  {why}"),
         }
-        done.push(plan);
     }
     println!("\nAfterwards, check with: slipdock tools");
     Ok(OK)

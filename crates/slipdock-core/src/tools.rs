@@ -63,6 +63,12 @@ impl Tool {
         }
     }
 
+    /// Whether Slipdock dumps and loads without the tool. Only the client
+    /// is optional: it lists names to pick from, and they can be typed.
+    pub fn optional(self) -> bool {
+        self == Tool::Mysql
+    }
+
     /// What the tool is needed for, for status lists.
     pub fn purpose(self) -> &'static str {
         match self {
@@ -380,8 +386,17 @@ impl Status {
         self.chosen().map(|candidate| candidate.path.as_path())
     }
 
-    /// One sentence on why no candidate is used. `None` when one is.
-    pub fn problem(&self) -> Option<String> {
+    /// Whether nothing was found at all, and no path is set: the tool is
+    /// to be installed. Otherwise, without a chosen candidate, something
+    /// is there and does not work.
+    pub fn absent(&self) -> bool {
+        self.configured.is_none() && self.candidates.is_empty()
+    }
+
+    /// Why no candidate is used, without what to do about it. `None` when
+    /// one is used. A front end with its own controls shows this;
+    /// [`Status::problem`] adds the commands of the command line tool.
+    pub fn reason(&self) -> Option<String> {
         if self.chosen().is_some() {
             return None;
         }
@@ -395,19 +410,35 @@ impl Status {
                 _ => "not found".to_string(),
             };
             return Some(format!(
-                "the path set for {tool}, {}, {why}. Change it with: slipdock tools set {tool} <path>, \
-                 or go back to searching with: slipdock tools unset {tool}",
+                "the path set for {tool}, {}, {why}",
                 path.display()
             ));
         }
         Some(match self.candidates.as_slice() {
-            [] => format!("{tool} was not found. See: slipdock tools install {tool}"),
+            [] => format!("{tool} was not found"),
             [only] => format!(
                 "{} {}",
                 only.path.display(),
                 only.result.as_ref().unwrap_err()
             ),
             many => format!("none of the {} copies of {tool} found works", many.len()),
+        })
+    }
+
+    /// One sentence on why no candidate is used, and the command that
+    /// helps. `None` when one is.
+    pub fn problem(&self) -> Option<String> {
+        let reason = self.reason()?;
+        let tool = self.tool;
+        Some(if self.configured.is_some() {
+            format!(
+                "{reason}. Change it with: slipdock tools set {tool} <path>, \
+                 or go back to searching with: slipdock tools unset {tool}"
+            )
+        } else if self.candidates.is_empty() {
+            format!("{reason}. See: slipdock tools install {tool}")
+        } else {
+            reason
         })
     }
 }
@@ -477,7 +508,8 @@ pub fn path_with(zstd: &Path, dirs: &SearchDirs) -> Option<String> {
 // --- Install plan ------------------------------------------------------------------
 
 /// How to get a missing tool. Slipdock runs a command only when it needs no
-/// root rights, and only after the user has seen it and said yes.
+/// root rights, and only when the user asks for it: the front end shows the
+/// command beside the control that starts it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallPlan {
     /// A command Slipdock can run as the current user.
@@ -510,6 +542,56 @@ pub fn install_plan(tool: Tool, os: Os, managers: &[PackageManager]) -> InstallP
         ]),
         Os::Linux | Os::Other => InstallPlan::Steps(linux_steps(tool, managers)),
     }
+}
+
+/// One thing to install, and the tools it brings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Install {
+    /// More than one when a package holds several tools: mydumper and
+    /// myloader come together.
+    pub tools: Vec<Tool>,
+    pub plan: InstallPlan,
+}
+
+impl Install {
+    /// The tools as a phrase: "mydumper and myloader".
+    pub fn names(&self) -> String {
+        let names: Vec<&str> = self.tools.iter().map(|tool| tool.name()).collect();
+        names.join(" and ")
+    }
+}
+
+/// What to install to get the `missing` tools, in their order. Tools with
+/// the same plan are one entry, so a package is never offered twice.
+pub fn installs(missing: &[Tool], os: Os, managers: &[PackageManager]) -> Vec<Install> {
+    let mut installs: Vec<Install> = Vec::new();
+    for &tool in missing {
+        let plan = install_plan(tool, os, managers);
+        match installs.iter_mut().find(|install| install.plan == plan) {
+            Some(install) => install.tools.push(tool),
+            None => installs.push(Install {
+                tools: vec![tool],
+                plan,
+            }),
+        }
+    }
+    installs
+}
+
+/// The command of an [`InstallPlan::Command`], ready to start.
+///
+/// The program is the one in the search folders, by its full path: the
+/// package manager was found there, and the `PATH` of an app started from
+/// the Dock often does not lead to it. `None` when it is in none of them;
+/// the `PATH` of the process is never searched.
+pub fn install_command(program: &str, args: &[String], dirs: &SearchDirs) -> Option<Command> {
+    let path = dirs
+        .all()
+        .map(|dir| dir.join(program))
+        .find(|path| platform::is_executable(path))?;
+    let mut command = Command::new(path);
+    command.args(args);
+    Some(command)
 }
 
 /// The Homebrew package. mydumper and myloader come in one.
@@ -813,6 +895,10 @@ esac"#;
             problem.contains("slipdock tools unset mydumper"),
             "{problem}"
         );
+        // Something is set, so the tool is not one to install.
+        assert!(!status.absent());
+        let reason = status.reason().unwrap();
+        assert!(problem.starts_with(&reason) && !reason.contains("slipdock"));
     }
 
     #[test]
@@ -823,6 +909,11 @@ esac"#;
             error.to_string(),
             "myloader was not found. See: slipdock tools install myloader"
         );
+        // The reason alone is for a front end that has its own controls.
+        let status = status(Tool::Myloader, &Settings::default(), &SearchDirs::default());
+        assert_eq!(status.reason().unwrap(), "myloader was not found");
+        assert!(status.absent());
+        assert!(Tool::Mysql.optional() && !Tool::Zstd.optional());
     }
 
     #[test]
@@ -882,5 +973,49 @@ esac"#;
             install_plan(Tool::Mydumper, Os::Windows, &[]),
             InstallPlan::Unsupported(_)
         ));
+    }
+
+    #[test]
+    fn one_install_for_tools_of_one_package() {
+        let brew = [PackageManager::Homebrew];
+        let found = installs(&Tool::ALL, Os::MacOs, &brew);
+        let tools: Vec<&[Tool]> = found.iter().map(|i| i.tools.as_slice()).collect();
+        assert_eq!(
+            tools,
+            [
+                &[Tool::Mydumper, Tool::Myloader][..],
+                &[Tool::Mysql],
+                &[Tool::Zstd]
+            ]
+        );
+        assert_eq!(found[0].names(), "mydumper and myloader");
+        assert_eq!(
+            found[0].plan,
+            install_plan(Tool::Mydumper, Os::MacOs, &brew)
+        );
+        // Only what is missing is offered.
+        let found = installs(&[Tool::Myloader], Os::MacOs, &brew);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].tools, [Tool::Myloader]);
+        assert!(installs(&[], Os::MacOs, &brew).is_empty());
+    }
+
+    #[test]
+    fn the_install_command_starts_the_program_of_the_search_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let brew = fake(&temp.path().join("usual"), "brew", "");
+        let dirs = SearchDirs {
+            path: vec![temp.path().join("empty")],
+            usual: vec![temp.path().join("usual")],
+        };
+        let args = ["install".to_string(), "mydumper".to_string()];
+        let command = install_command("brew", &args, &dirs).unwrap();
+        assert_eq!(command.get_program(), brew.as_os_str());
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["install", "mydumper"]
+        );
+        // A program that is in none of the folders is not looked for on PATH.
+        assert!(install_command("sh", &args, &dirs).is_none());
     }
 }
