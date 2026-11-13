@@ -18,6 +18,7 @@
 //! | text inputs               | `profiles_view.rs` |
 //! | events, dialogs           | `load_view.rs`  |
 
+mod band_picker;
 mod dump_view;
 mod dumps_view;
 mod load_view;

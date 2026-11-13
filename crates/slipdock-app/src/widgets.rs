@@ -107,6 +107,11 @@ pub fn wrap_row() -> Div {
     h_flex().flex_wrap().gap_2().min_w_0()
 }
 
+/// Whether a band is too light to be seen on a card without a line.
+fn pale(color: Hsla) -> bool {
+    color.l > 0.8
+}
+
 /// A block of a profile's band colour. Without a colour (a dump of a profile
 /// that is gone, a folder named by hand) the block is an outline.
 fn band_block(color: Option<Hsla>, width: f32, height: f32, cx: &App) -> Div {
@@ -116,6 +121,12 @@ fn band_block(color: Option<Hsla>, width: f32, height: f32, cx: &App) -> Div {
         .flex_shrink_0()
         .rounded(px(1.));
     match color {
+        // The user can choose a colour as light as the card it is on; the
+        // line keeps such a block in sight.
+        Some(color) if pale(color) => block
+            .bg(color)
+            .border_1()
+            .border_color(cx.theme().border),
         Some(color) => block.bg(color),
         None => block.border_1().border_color(cx.theme().muted_foreground),
     }
@@ -186,6 +197,9 @@ pub fn profile_strip(name: Option<&str>, server: Option<&str>, cx: &App) -> Div 
                 .min_h(px(40.))
                 .flex_shrink_0()
                 .map(|this| match band {
+                    Some(color) if pale(color) => {
+                        this.bg(color).border_r_1().border_color(theme.border)
+                    }
                     Some(color) => this.bg(color),
                     // No band: the place of one, marked off by a line.
                     None => this.border_r_1().border_color(theme.border),

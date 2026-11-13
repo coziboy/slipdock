@@ -5,6 +5,9 @@
 //! (comments, tuning options) is left exactly as it is, because saving goes
 //! through the core's line-preserving `Document`. "Open file" is there for
 //! the rest.
+//!
+//! The colour of a profile is not in its file but in the settings, so it is
+//! not part of "Save": it is written the moment it is chosen.
 
 use gpui_kit::component::button::*;
 use gpui_kit::component::checkbox::Checkbox;
@@ -17,6 +20,7 @@ use gpui_kit::*;
 use slipdock_core::profile::{self, PasswordStore, Profile, SECTION};
 use slipdock_core::{Error, Result, secrets, server};
 
+use crate::band_picker::{BandPicked, BandPicker};
 use crate::state::{Core, core};
 use crate::theme;
 use crate::widgets::{self, Tone};
@@ -36,6 +40,8 @@ pub struct ProfilesView {
     user: Entity<InputState>,
     password: Entity<InputState>,
     pub(crate) dump_dir: Entity<InputState>,
+    /// The band of the profile in the form, as the colour field shows it.
+    pub(crate) band: Entity<BandPicker>,
     tls_off: bool,
     keychain: bool,
     /// The connection test is waiting for the server.
@@ -79,6 +85,11 @@ impl ProfilesView {
                 }
             },
         ));
+        // A colour chosen in the field is the profile's band from then on.
+        let band = cx.new(|cx| BandPicker::new(window, cx));
+        subscriptions.push(cx.subscribe(&band, |this, _, event: &BandPicked, cx| {
+            this.set_band(event.0, cx);
+        }));
         let mut view = ProfilesView {
             profiles: Vec::new(),
             selected: None,
@@ -89,6 +100,7 @@ impl ProfilesView {
             user,
             password,
             dump_dir,
+            band,
             tls_off: false,
             keychain: false,
             testing: false,
@@ -161,8 +173,27 @@ impl ProfilesView {
         for (input, value) in values {
             input.update(cx, |input, cx| input.set_value(value, window, cx));
         }
+        // A profile made a moment ago has no band until it is given one.
+        theme::assign_bands(cx);
+        let band = core(cx).settings.band(name);
+        // Showing a band in the field is not a choice: it changes nothing.
+        self.band
+            .update(cx, |field, cx| field.set_color(band, window, cx));
         self.selected = Some(name.to_string());
         self.message = None;
+        cx.notify();
+    }
+
+    /// Makes `band` (`0xRRGGBB`) the band of the profile in the form, at
+    /// once: the band is in the settings, not in the profile's file, so
+    /// "Save" has no part in it.
+    pub(crate) fn set_band(&mut self, band: u32, cx: &mut Context<Self>) {
+        let Some(name) = self.selected.clone() else {
+            return;
+        };
+        if let Err(error) = theme::set_band(&name, band, cx) {
+            self.message = Some((false, error.to_string()));
+        }
         cx.notify();
     }
 
@@ -528,6 +559,21 @@ impl ProfilesView {
                             .tooltip("Threads, rows and the other mydumper/myloader options are edited in the file")
                             .on_click(move |_, _, cx| cx.open_with_system(&path)),
                     ),
+            )
+            .child(
+                group("Colour", cx).child(widgets::field(
+                    "Band",
+                    v_flex()
+                        .gap_2()
+                        // The button is as wide as what it shows, not
+                        // as wide as the form.
+                        .child(h_flex().child(self.band.clone()))
+                        .child(widgets::hint(
+                            "Shown beside this profile and its dumps. Kept as soon as it is chosen.",
+                            cx,
+                        )),
+                    cx,
+                )),
             )
             .child(
                 group("Connection", cx)

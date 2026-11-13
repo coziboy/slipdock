@@ -16,6 +16,9 @@
 //!
 //! [options.myloader]
 //! arguments = "--threads 8"
+//!
+//! [bands]
+//! production = "#C93A96"
 //! ```
 
 use std::collections::BTreeMap;
@@ -43,12 +46,18 @@ pub struct Settings {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub left_out: BTreeMap<String, BTreeMap<String, Vec<String>>>,
-    /// The colour band the app shows a profile with, as a number from 0.
-    /// It is kept here so that a profile has the same band on every start,
-    /// and no two profiles share one while there are bands left. The command
+    /// The colour band the app shows a profile with, as `0xRRGGBB`; the
+    /// file has it as `"#RRGGBB"`. It is kept here so that a profile has the
+    /// same band on every start. The app gives a new profile one of
+    /// [`BANDS`], and the user can choose any colour after that. The command
     /// line tool does not read this.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub bands: BTreeMap<String, u8>,
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        serialize_with = "write_bands",
+        deserialize_with = "read_bands"
+    )]
+    pub bands: BTreeMap<String, u32>,
     /// Choices that hold for every dump and load, whatever the profile.
     #[serde(default, skip_serializing_if = "Options::is_empty")]
     pub options: Options,
@@ -253,27 +262,33 @@ impl Settings {
         }
     }
 
-    /// The band of a profile, if it has one.
-    pub fn band(&self, profile: &str) -> Option<u8> {
+    /// The band of a profile as `0xRRGGBB`, if it has one.
+    pub fn band(&self, profile: &str) -> Option<u32> {
         self.bands.get(profile).copied()
     }
 
-    /// Gives every profile in `profiles` a band out of `count`, and forgets
-    /// the bands of profiles that are gone. A profile that has a band keeps
-    /// it. A new one gets the lowest band no profile has; with more profiles
-    /// than bands, the band the fewest profiles have. Returns whether
-    /// anything changed, so the caller knows to save.
-    pub fn assign_bands(&mut self, profiles: &[String], count: u8) -> bool {
+    /// Gives a profile the band the user chose. Only the red, green and
+    /// blue of `color` count.
+    pub fn set_band(&mut self, profile: &str, color: u32) {
+        self.bands.insert(profile.to_string(), color & 0xFF_FFFF);
+    }
+
+    /// Gives every profile in `profiles` a band, and forgets the bands of
+    /// profiles that are gone. A profile that has a band keeps it, whether
+    /// the app gave it or the user chose it. A new one gets the first of
+    /// [`BANDS`] no profile has; with every one of them taken, the one the
+    /// fewest profiles have. Returns whether anything changed, so the caller
+    /// knows to save.
+    pub fn assign_bands(&mut self, profiles: &[String]) -> bool {
         let before = self.bands.len();
-        self.bands
-            .retain(|name, band| *band < count && profiles.contains(name));
+        self.bands.retain(|name, _| profiles.contains(name));
         let mut changed = self.bands.len() != before;
         for name in profiles {
             if self.bands.contains_key(name) {
                 continue;
             }
-            let uses = |band: u8| self.bands.values().filter(|used| **used == band).count();
-            let Some(band) = (0..count).min_by_key(|band| uses(*band)) else {
+            let uses = |band: &u32| self.bands.values().filter(|used| *used == band).count();
+            let Some(band) = BANDS.iter().copied().min_by_key(uses) else {
                 break;
             };
             self.bands.insert(name.clone(), band);
@@ -281,6 +296,70 @@ impl Settings {
         }
         changed
     }
+}
+
+/// The bands the app gives out, in the order profiles get them. Six, because
+/// that is how many hues can be told apart at a glance while staying clear
+/// of the colours the app uses to say how something went. A seventh profile
+/// shares a band until the user chooses another colour for it.
+pub const BANDS: [u32; 6] = [
+    0x0B8F8A, // teal
+    0x7650D8, // violet
+    0x857F00, // olive
+    0xC93A96, // magenta
+    0x4F8A12, // green
+    0x9B3FB5, // purple
+];
+
+/// A band as the settings file has it: `#0B8F8A`.
+pub fn band_hex(color: u32) -> String {
+    format!("#{:06X}", color & 0xFF_FFFF)
+}
+
+/// Reads `#RRGGBB` (the `#` may be missing, the letters may be small).
+/// `None` for anything else.
+pub fn parse_band(text: &str) -> Option<u32> {
+    let text = text.trim();
+    let digits = text.strip_prefix('#').unwrap_or(text);
+    if digits.len() != 6 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok()
+}
+
+fn write_bands<S: serde::Serializer>(
+    bands: &BTreeMap<String, u32>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_map(bands.iter().map(|(name, color)| (name, band_hex(*color))))
+}
+
+/// Reads the bands without ever failing the file over one of them. A number
+/// is a band from before colours could be chosen: its place in [`BANDS`].
+/// A value that is neither that nor a colour is dropped, and the app gives
+/// the profile a band again.
+fn read_bands<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<String, u32>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Written {
+        Place(usize),
+        Hex(String),
+        Other(serde::de::IgnoredAny),
+    }
+    let written = BTreeMap::<String, Written>::deserialize(deserializer)?;
+    Ok(written
+        .into_iter()
+        .filter_map(|(name, band)| {
+            let color = match band {
+                Written::Place(place) => BANDS.get(place).copied(),
+                Written::Hex(text) => parse_band(&text),
+                Written::Other(_) => None,
+            }?;
+            Some((name, color))
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -405,28 +484,82 @@ mod tests {
         assert!(error.contains("settings.toml is not valid"), "{error}");
     }
 
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
     #[test]
     fn a_profile_keeps_its_band() {
-        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<_>>();
         let mut settings = Settings::default();
-        assert!(settings.assign_bands(&names(&["local", "staging"]), 3));
-        assert_eq!(settings.band("local"), Some(0));
-        assert_eq!(settings.band("staging"), Some(1));
+        assert!(settings.assign_bands(&names(&["local", "staging"])));
+        assert_eq!(settings.band("local"), Some(BANDS[0]));
+        assert_eq!(settings.band("staging"), Some(BANDS[1]));
 
         // A new profile takes a free band; the others keep theirs.
-        assert!(settings.assign_bands(&names(&["alpha", "local", "staging"]), 3));
-        assert_eq!(settings.band("alpha"), Some(2));
-        assert_eq!(settings.band("local"), Some(0));
-        assert!(!settings.assign_bands(&names(&["alpha", "local", "staging"]), 3));
+        assert!(settings.assign_bands(&names(&["alpha", "local", "staging"])));
+        assert_eq!(settings.band("alpha"), Some(BANDS[2]));
+        assert_eq!(settings.band("local"), Some(BANDS[0]));
+        assert!(!settings.assign_bands(&names(&["alpha", "local", "staging"])));
 
         // A deleted profile gives its band back, and the next one takes it.
-        assert!(settings.assign_bands(&names(&["alpha", "staging", "zeta"]), 3));
+        assert!(settings.assign_bands(&names(&["alpha", "staging", "zeta"])));
         assert_eq!(settings.band("local"), None);
-        assert_eq!(settings.band("zeta"), Some(0));
-        assert_eq!(settings.band("staging"), Some(1));
+        assert_eq!(settings.band("zeta"), Some(BANDS[0]));
+        assert_eq!(settings.band("staging"), Some(BANDS[1]));
 
         // More profiles than bands: the band used least is shared.
-        assert!(settings.assign_bands(&names(&["alpha", "more", "staging", "zeta"]), 3));
-        assert_eq!(settings.band("more"), Some(0));
+        let many = names(&["a", "b", "c", "d", "e", "f", "g"]);
+        let mut settings = Settings::default();
+        assert!(settings.assign_bands(&many));
+        assert_eq!(settings.band("f"), Some(BANDS[5]));
+        assert_eq!(settings.band("g"), Some(BANDS[0]));
+    }
+
+    #[test]
+    fn a_chosen_band_is_kept_and_written_as_hex() {
+        let config = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.assign_bands(&names(&["local", "staging"]));
+        settings.set_band("local", 0x336699);
+        // The app does not take a chosen colour back, and a colour that is
+        // not one of its own does not count as one of them being taken.
+        assert!(!settings.assign_bands(&names(&["local", "staging"])));
+        assert!(settings.assign_bands(&names(&["local", "next", "staging"])));
+        assert_eq!(settings.band("local"), Some(0x336699));
+        assert_eq!(settings.band("next"), Some(BANDS[0]));
+
+        settings.save(config.path()).unwrap();
+        let text = fs::read_to_string(Settings::file(config.path())).unwrap();
+        assert!(text.contains("local = \"#336699\""), "{text}");
+        assert_eq!(Settings::load(config.path()).unwrap(), settings);
+    }
+
+    #[test]
+    fn a_numbered_band_from_an_older_file_is_its_colour() {
+        let text = "[tools.mysql]\nsource = \"path\"\npath = \"/bin/mysql\"\n\n\
+            [bands]\nlocal = 0\nstaging = 3\nsmall = \"0b8f8a\"\n\
+            far = 9\nwrong = \"teal\"\nodd = true\nless = -1\n";
+        let mut settings: Settings = toml::from_str(text).unwrap();
+        assert_eq!(settings.band("local"), Some(BANDS[0]));
+        assert_eq!(settings.band("staging"), Some(BANDS[3]));
+        assert_eq!(settings.band("small"), Some(0x0B8F8A));
+        // What is not a band is dropped; the rest of the file still counts.
+        for name in ["far", "wrong", "odd", "less"] {
+            assert_eq!(settings.band(name), None, "{name}");
+        }
+        assert!(settings.tool_path("mysql").is_some());
+        // The app then gives such a profile a band again.
+        assert!(settings.assign_bands(&names(&["far", "local", "staging"])));
+        assert_eq!(settings.band("far"), Some(BANDS[1]));
+    }
+
+    #[test]
+    fn a_band_is_read_as_six_hex_digits() {
+        assert_eq!(parse_band("#0B8F8A"), Some(0x0B8F8A));
+        assert_eq!(parse_band(" 0b8f8a "), Some(0x0B8F8A));
+        for wrong in ["", "#", "#FFF", "#0B8F8A00", "#+B8F8A", "#GGGGGG"] {
+            assert_eq!(parse_band(wrong), None, "{wrong}");
+        }
+        assert_eq!(band_hex(0x00FF00), "#00FF00");
     }
 }

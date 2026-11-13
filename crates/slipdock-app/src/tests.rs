@@ -1115,6 +1115,196 @@ fn the_profile_form_knows_its_unsaved_changes(cx: &mut TestAppContext) {
     assert!(file.contains("other.example.test"), "{file}");
 }
 
+/// The colour field of the Profiles screen shows the band of the profile in
+/// the form. A colour chosen on its wheel is the band at once, without
+/// "Save", and stays the band when bands are given out again. It is the
+/// band of that profile only.
+#[gpui_kit::test]
+fn a_chosen_colour_is_the_band_of_the_profile(cx: &mut TestAppContext) {
+    use crate::theme::{BANDS, band, color};
+    let (_temp, root) = temp_root();
+    let context = sandbox(&root);
+    fs::write(root.join("config/profiles/other.cnf"), PROFILE).unwrap();
+    let (shell, mut cx) = open(cx, context);
+    let profiles = shell.read_with(&cx, |shell, _| shell.profiles.clone());
+    let field = profiles.read_with(&cx, |view, _| view.band.clone());
+    let shown = |cx: &mut VisualTestContext| field.read_with(cx, |field, _| field.rgb);
+    let typed = |cx: &mut VisualTestContext| {
+        field.read_with(cx, |field, cx| field.hex.read(cx).value().to_string())
+    };
+    let saved = || fs::read_to_string(root.join("config/settings.toml")).unwrap();
+    assert_eq!(shown(&mut cx), Some(BANDS[0]));
+    assert_eq!(typed(&mut cx), "#0B8F8A");
+
+    // The right end of the wheel is red, as dark as the band was: the
+    // wheel keeps its brightness. With the slider at its end it is the full
+    // red; the hex field says so, and the settings have it before anything
+    // is saved by hand.
+    cx.update(|window, cx| field.update(cx, |field, cx| field.pick_at(1., 0., window, cx)));
+    cx.run_until_parked();
+    assert_eq!(typed(&mut cx), "#8F0000");
+    cx.update(|window, cx| {
+        field.update(cx, |field, cx| field.pick_brightness(1., window, cx))
+    });
+    cx.run_until_parked();
+    assert_eq!(shown(&mut cx), Some(0xFF0000));
+    assert_eq!(typed(&mut cx), "#FF0000");
+    cx.update(|_, cx| assert_eq!(band("example", cx), Some(color(0xFF0000))));
+    assert!(saved().contains("example = \"#FF0000\""), "{}", saved());
+
+    // Half as light, with the mark where it was: a darker red.
+    cx.update(|window, cx| {
+        field.update(cx, |field, cx| field.pick_brightness(0.5, window, cx))
+    });
+    cx.run_until_parked();
+    assert_eq!(typed(&mut cx), "#800000");
+    assert!(saved().contains("example = \"#800000\""), "{}", saved());
+
+    // A colour typed into the hex field is chosen when it is whole, and
+    // what is being typed is left as it is.
+    for (text, band) in [("#3366", 0x800000), ("#336699", 0x336699)] {
+        cx.update(|window, cx| {
+            field.update(cx, |field, cx| {
+                // A typed edit: the new text and the event it brings.
+                field.hex.update(cx, |hex, cx| {
+                    hex.set_value(text, window, cx);
+                    cx.emit(gpui_kit::component::input::InputEvent::Change);
+                })
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(shown(&mut cx), Some(band), "{text}");
+        assert_eq!(typed(&mut cx), text);
+    }
+    assert!(saved().contains("example = \"#336699\""), "{}", saved());
+
+    // The other profile has its own band, and showing it changes neither.
+    cx.update(|window, cx| profiles.update(cx, |view, cx| view.select("other", window, cx)));
+    cx.run_until_parked();
+    assert_eq!(shown(&mut cx), Some(BANDS[1]));
+    assert!(saved().contains("example = \"#336699\""), "{}", saved());
+    assert!(saved().contains("other = \"#7650D8\""), "{}", saved());
+
+    // One of the app's own bands, from its swatch under the wheel.
+    cx.update(|window, cx| field.update(cx, |field, cx| field.pick(BANDS[3], window, cx)));
+    cx.run_until_parked();
+    assert!(saved().contains("other = \"#C93A96\""), "{}", saved());
+
+    // Another screen and back: no band is given out again, the form opens
+    // on the profile it had, and the screen draws with the wheel open.
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Dumps, cx)));
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Profiles, cx)));
+    cx.update(|_, cx| field.update(cx, |field, cx| {
+        field.open = true;
+        field.wheel = true;
+        cx.notify();
+    }));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(band("example", cx), Some(color(0x336699)));
+        assert_eq!(band("other", cx), Some(color(BANDS[3])));
+    });
+    assert_eq!(shown(&mut cx), Some(BANDS[3]));
+}
+
+/// The colour button opens the sets of colours; "Custom colour" puts
+/// the wheel beside them. The wheel is used with the pointer: a press on it
+/// chooses the colour under the pointer, and a drag goes on choosing, also
+/// outside the wheel, until the button comes up.
+#[gpui_kit::test]
+fn the_wheel_follows_the_pointer(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, MouseButton, point, px};
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Profiles, cx)));
+    let profiles = shell.read_with(&cx, |shell, _| shell.profiles.clone());
+    let field = profiles.read_with(&cx, |view, _| view.band.clone());
+    let shown = |cx: &mut VisualTestContext| field.read_with(cx, |field, _| field.rgb);
+    let saved = || fs::read_to_string(root.join("config/settings.toml")).unwrap();
+    let draw = |cx: &mut VisualTestContext| {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.render_frame(cx));
+    };
+    draw(&mut cx);
+    assert_eq!(cx.debug_bounds("band-wheel"), None, "closed: no wheel");
+
+    // The button says what the band is; a click on it opens the wheel.
+    let button = cx.update(|window, _| {
+        window
+            .find_by_label("Choose the colour of this profile")
+            .bounds()
+    });
+    cx.simulate_click(button.center(), Modifiers::default());
+    draw(&mut cx);
+    assert!(field.read_with(&cx, |field, _| field.open));
+    // First the colours to take as they are; the wheel comes on request.
+    assert!(cx.debug_bounds("band-colour-0").is_some());
+    assert_eq!(cx.debug_bounds("band-wheel"), None);
+    let more = cx.update(|window, _| window.find_by_label("Custom colour").bounds());
+    cx.simulate_click(more.center(), Modifiers::default());
+    draw(&mut cx);
+    let wheel = cx.debug_bounds("band-wheel").expect("the wheel is painted");
+    let middle = wheel.center();
+    let radius = wheel.size.width / 2.;
+
+    // The example band is the first of the app's, #0B8F8A: the wheel is as
+    // dark as it. A press near the right rim is a red that dark.
+    let right = point(middle.x + radius - px(8.), middle.y);
+    cx.simulate_mouse_down(right, MouseButton::Left, Modifiers::default());
+    draw(&mut cx);
+    let Some(red) = shown(&mut cx) else {
+        panic!("no colour")
+    };
+    assert_eq!(red >> 16, 0x8F, "{red:06X}");
+    assert!(red & 0xFFFF < 0x2020 && red & 0xFF == (red >> 8) & 0xFF, "{red:06X}");
+
+    // Dragged far out to the left, past the rim: the colour across from
+    // red, as strong as it gets.
+    let far_left = point(middle.x - radius * 3., middle.y);
+    cx.simulate_mouse_move(far_left, MouseButton::Left, Modifiers::default());
+    draw(&mut cx);
+    assert_eq!(shown(&mut cx), Some(0x008F8F));
+    assert!(saved().contains("example = \"#008F8F\""), "{}", saved());
+
+    // The button comes up; the pointer then moves over the wheel without
+    // choosing anything.
+    cx.simulate_mouse_up(far_left, MouseButton::Left, Modifiers::default());
+    draw(&mut cx);
+    cx.simulate_mouse_move(right, None, Modifiers::default());
+    draw(&mut cx);
+    assert_eq!(shown(&mut cx), Some(0x008F8F));
+    assert!(field.read_with(&cx, |field, _| field.open), "still open");
+
+    // A press beside the wheel, inside its square, chooses nothing either.
+    let corner = point(wheel.origin.x + px(4.), wheel.origin.y + px(4.));
+    cx.simulate_mouse_down(corner, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(corner, MouseButton::Left, Modifiers::default());
+    draw(&mut cx);
+    assert_eq!(shown(&mut cx), Some(0x008F8F));
+
+    // The colours are still there beside the wheel. A click on one takes
+    // it, and the wheel stays.
+    let swatch = cx.debug_bounds("band-colour-0").expect("the colours are shown");
+    cx.simulate_click(swatch.center(), Modifiers::default());
+    draw(&mut cx);
+    let first = crate::band_picker::palette()[0][0];
+    assert_eq!(shown(&mut cx), Some(first));
+    assert!(cx.debug_bounds("band-wheel").is_some());
+
+    // The same button puts the wheel away again.
+    let less = cx.update(|window, _| window.find_by_label("Hide custom colour").bounds());
+    cx.simulate_click(less.center(), Modifiers::default());
+    draw(&mut cx);
+    assert_eq!(cx.debug_bounds("band-wheel"), None);
+    assert!(field.read_with(&cx, |field, _| field.open), "still open");
+    assert!(
+        saved().contains(&format!("example = \"#{first:06X}\"")),
+        "{}",
+        saved()
+    );
+}
+
 /// "New profile" asks for the name in a dialog. A name that cannot be used
 /// keeps the dialog open; a good one closes it and opens the new profile.
 #[gpui_kit::test]
@@ -1220,7 +1410,7 @@ fn a_profile_has_a_band(cx: &mut TestAppContext) {
         assert!(!theme.shadow);
     });
     let saved = fs::read_to_string(root.join("config/settings.toml")).unwrap();
-    assert!(saved.contains("example = 0"), "{saved}");
+    assert!(saved.contains("example = \"#0B8F8A\""), "{saved}");
 }
 
 /// The database list follows the typed name, without regard to case or to

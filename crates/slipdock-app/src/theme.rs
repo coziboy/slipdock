@@ -8,7 +8,8 @@
 //! has a flat colour, and wherever that profile or one of its dumps is on
 //! show, a block of that colour stands beside it. Which band a profile has
 //! is a setting in the core (`Settings::bands`), so it does not change from
-//! one start to the next.
+//! one start to the next. The app gives a new profile one of six; the
+//! Profiles screen lets the user choose any other colour.
 
 use gpui_kit::component::{Theme, ThemeRegistry};
 use gpui_kit::*;
@@ -46,18 +47,11 @@ pub const WARNING: u32 = 0x964F00;
 /// The ring of the focused control.
 pub const FOCUS: u32 = 0x2B6FE0;
 
-/// The bands, in the order profiles get them. Six, because that is how many
-/// hues can be told apart at a glance while staying clear of the red, green
-/// and amber above (those say how something went, a band says whose it is)
-/// and of the blue of the focus ring. A seventh profile shares a band.
-pub const BANDS: [u32; 6] = [
-    0x0B8F8A, // teal
-    0x7650D8, // violet
-    0x857F00, // olive
-    0xC93A96, // magenta
-    0x4F8A12, // green
-    0x9B3FB5, // purple
-];
+/// The bands the app gives out. The list is the core's, because which band
+/// a new profile gets is a rule; the tests below hold these six to the
+/// contrast and the hues the screens count on. A colour the user chooses is
+/// not held to them.
+pub use slipdock_core::settings::BANDS;
 
 /// The corners of what the screens draw themselves; the theme file below
 /// gives the components the same.
@@ -149,7 +143,7 @@ pub fn apply(cx: &mut App) {
 pub fn assign_bands(cx: &mut App) {
     cx.update_global::<Core, _>(|core, _| {
         let names = profile::names(&core.0.config_dir);
-        if core.0.settings.assign_bands(&names, BANDS.len() as u8) {
+        if core.0.settings.assign_bands(&names) {
             // When the settings cannot be written, the bands still hold
             // until the app is closed. A screen that saves settings for its
             // own reason then says what is wrong with the file.
@@ -161,8 +155,15 @@ pub fn assign_bands(cx: &mut App) {
 /// The band colour of a profile. `None` for a name that is not a profile:
 /// a dump of a deleted profile, or a folder named by hand.
 pub fn band(profile: &str, cx: &App) -> Option<Hsla> {
-    let band = cx.global::<Core>().0.settings.band(profile)?;
-    BANDS.get(band as usize).map(|hex| color(*hex))
+    cx.global::<Core>().0.settings.band(profile).map(color)
+}
+
+/// Makes `band` (`0xRRGGBB`) the band of a profile and writes the settings.
+pub fn set_band(profile: &str, band: u32, cx: &mut App) -> slipdock_core::Result<()> {
+    cx.update_global::<Core, _>(|core, _| {
+        core.0.settings.set_band(profile, band);
+        core.0.settings.save(&core.0.config_dir)
+    })
 }
 
 #[cfg(test)]
