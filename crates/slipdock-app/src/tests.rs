@@ -552,6 +552,47 @@ fn a_long_page_scrolls(cx: &mut TestAppContext) {
     }
 }
 
+/// In a window that is drawn up to its top edge (macOS), the strip the system
+/// owns takes its place above the page. A full-screen window
+/// has no such strip, and neither has a window with a title bar of its own.
+#[gpui_kit::test]
+fn the_page_starts_below_the_title_strip(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    fill_every_screen(&shell, &mut cx);
+    let top = |under: bool, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.under_title_bar = under;
+                shell.show(Screen::Dump, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.find_by_label("Run dump").bounds().top()
+        })
+    };
+
+    for width in [520., 1040.] {
+        cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(760.)));
+        let plain = top(false, &mut cx);
+        let under = top(true, &mut cx);
+        if width == 1040. {
+            // The strip is 40px and the page keeps 8px of its 24px above it.
+            assert_eq!(under, plain + gpui_kit::px(24.));
+        } else {
+            // The compact navigation is laid out anew: the name stands in
+            // the strip and the screens in one row below it.
+            assert_ne!(under, plain);
+        }
+
+        cx.update(|window, _| window.toggle_fullscreen());
+        assert_eq!(top(true, &mut cx), plain, "full screen, at {width} wide");
+        cx.update(|window, _| window.toggle_fullscreen());
+    }
+}
+
 /// The folder button of the profile form asks for one folder and writes it
 /// the way a profile stores it: `~` for home, a space left as a space.
 #[gpui_kit::test]

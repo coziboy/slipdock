@@ -19,7 +19,7 @@
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use slipdock_core::profile;
+use slipdock_core::{platform, profile};
 
 use crate::dump_view::DumpView;
 use crate::dumps_view::DumpsView;
@@ -78,6 +78,8 @@ pub struct Shell {
     pub(crate) tools: Entity<ToolsView>,
     /// Lets the window deliver key presses (and so actions) to this view.
     focus: FocusHandle,
+    /// The window is drawn up to its top edge (macOS): see `TITLE_STRIP`.
+    pub(crate) under_title_bar: bool,
 }
 
 impl Shell {
@@ -100,6 +102,7 @@ impl Shell {
             profiles: cx.new(|cx| ProfilesView::new(window, cx)),
             tools: cx.new(|cx| ToolsView::new(window, cx)),
             focus,
+            under_title_bar: platform::draws_under_title_bar(platform::current_os()),
         }
     }
 
@@ -123,6 +126,31 @@ impl Shell {
 /// Below this window width the navigation moves from the side to the top.
 const COMPACT_BELOW: Pixels = px(760.);
 
+/// Where the three window buttons of macOS stand on the rail: in line with
+/// the icons of the navigation.
+pub(crate) const WINDOW_BUTTONS: Point<Pixels> = point(px(20.), px(13.));
+
+/// The strip at the top of a window that is drawn up to its top edge.
+///
+/// The system still owns this strip: a drag there moves the window, a double
+/// click zooms it, and a click on something in it arrives late. So nothing
+/// that can be clicked is drawn in it. The rail and the ground run up through
+/// it, and the page scrolls below it.
+///
+/// Its height is the system's: the height of a window button (14px) plus
+/// twice the distance of `WINDOW_BUTTONS` from the top.
+const TITLE_STRIP: Pixels = px(40.);
+
+/// In the compact layout the name stands in the strip, after the window
+/// buttons: three of 14px with 9px between them, from 20px, then 12px.
+const AFTER_WINDOW_BUTTONS: Pixels = px(92.);
+
+/// Whether the strip is drawn. A full-screen window has no window buttons
+/// and no title bar, so it has no strip either.
+fn title_strip(under_title_bar: bool, fullscreen: bool) -> bool {
+    under_title_bar && !fullscreen
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
@@ -130,6 +158,7 @@ impl Render for Shell {
         // the layout can depend on the window's size. Most of the app adapts
         // by wrapping (see `widgets.rs`); only this frame switches layout.
         let compact = window.viewport_size().width < COMPACT_BELOW;
+        let strip = title_strip(self.under_title_bar, window.is_fullscreen());
 
         let brand = v_flex()
             .px_2()
@@ -191,7 +220,23 @@ impl Render for Shell {
             );
         }
 
-        let navigation = if compact {
+        let navigation = if compact && strip {
+            // The name stands beside the window buttons, in the strip, and
+            // the screens get the row below it.
+            v_flex()
+                .flex_shrink_0()
+                .w_full()
+                .border_b_1()
+                .child(
+                    h_flex()
+                        .h(TITLE_STRIP)
+                        .flex_shrink_0()
+                        // The name has 8px of padding of its own.
+                        .pl(AFTER_WINDOW_BUTTONS - px(8.))
+                        .child(brand),
+                )
+                .child(div().px_3().pb_2().child(items))
+        } else if compact {
             h_flex()
                 .flex_wrap()
                 .flex_shrink_0()
@@ -201,6 +246,8 @@ impl Render for Shell {
                 .px_3()
                 .py_2()
                 .border_b_1()
+                .child(brand)
+                .child(items)
         } else {
             v_flex()
                 .w(px(210.))
@@ -209,12 +256,14 @@ impl Render for Shell {
                 .gap_1()
                 .p_3()
                 .border_r_1()
+                // The window buttons stand here.
+                .when(strip, |this| this.pt(TITLE_STRIP))
+                .child(brand)
+                .child(items)
         }
         .bg(theme.sidebar)
         .text_color(theme.sidebar_foreground)
-        .border_color(theme.sidebar_border)
-        .child(brand)
-        .child(items);
+        .border_color(theme.sidebar_border);
 
         // An `Entity<V>` where V implements Render can be used as a child.
         let content: AnyView = match self.screen {
@@ -239,29 +288,43 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ShowTools, _, cx| this.show(Screen::Tools, cx)))
             .child(navigation)
             .child(
-                div()
-                    .id("content")
+                v_flex()
                     .flex_1()
                     // Without these a flex child never gets smaller than its
                     // content: long lines would push past the window, and a
                     // long page would not scroll.
                     .min_w_0()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    // Beside the rail the strip is ground: the page starts
+                    // below it, so nothing scrolls into it.
+                    .when(strip && !compact, |this| {
+                        this.child(div().h(TITLE_STRIP).flex_shrink_0())
+                    })
                     .child(
-                        // On a wide window the page keeps a readable width
-                        // and sits in the middle.
                         div()
-                            .w_full()
-                            .max_w(px(980.))
-                            .mx_auto()
-                            .when(compact, |this| this.p_4())
-                            .when(!compact, |this| this.p_6())
-                            .child(content),
-                    )
-                    // Lets the tests find this element by its id. Without
-                    // the `test-support` feature this does nothing.
-                    .test_support(),
+                            .id("content")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(
+                                // On a wide window the page keeps a readable
+                                // width and sits in the middle.
+                                div()
+                                    .w_full()
+                                    .max_w(px(980.))
+                                    .mx_auto()
+                                    .when(compact, |this| this.p_4())
+                                    .when(!compact, |this| this.p_6())
+                                    // The strip is already the space above
+                                    // the page.
+                                    .when(strip && !compact, |this| this.pt_2())
+                                    .child(content),
+                            )
+                            // Lets the tests find this element by its id.
+                            // Without the `test-support` feature this does
+                            // nothing.
+                            .test_support(),
+                    ),
             )
     }
 }

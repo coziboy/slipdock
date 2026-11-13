@@ -36,6 +36,16 @@ pub fn current_os() -> Os {
     }
 }
 
+/// Whether the app draws its window up to the top edge, with the window's
+/// buttons on top of what it draws.
+///
+/// Only macOS: its title bar can be made see-through, and its three buttons
+/// stay where they are. On Linux the title bar belongs to the desktop, which
+/// draws it in its own look, so the app leaves it alone.
+pub fn draws_under_title_bar(os: Os) -> bool {
+    os == Os::MacOs
+}
+
 // --- Folders ---------------------------------------------------------------
 
 /// A way to read environment variables. The real one is `&|k| std::env::var_os(k)`.
@@ -250,6 +260,13 @@ mod tests {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| OsString::from(value))
         }
+    }
+
+    #[test]
+    fn only_macos_draws_under_the_title_bar() {
+        assert!(draws_under_title_bar(Os::MacOs));
+        assert!(!draws_under_title_bar(Os::Linux));
+        assert!(!draws_under_title_bar(Os::Windows));
     }
 
     #[test]

@@ -34,7 +34,7 @@ mod widgets;
 mod tests;
 
 use gpui_kit::*;
-use slipdock_core::job;
+use slipdock_core::{job, platform};
 
 use shell::Shell;
 use state::Core;
@@ -110,6 +110,7 @@ fn main() {
         })
         .detach();
 
+        let under_title_bar = platform::draws_under_title_bar(platform::current_os());
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
@@ -118,9 +119,15 @@ fn main() {
             ))),
             // Every screen fits in this; below it the window stops shrinking.
             window_min_size: Some(size(px(520.), px(420.))),
+            // On macOS the window is drawn up to its top edge and the three
+            // window buttons sit on the rail (see `shell::TITLE_STRIP`). The
+            // title is not drawn then, but Mission Control and the Window
+            // menu still show it. Dragging the top of the window stays the
+            // system's job.
             titlebar: Some(TitlebarOptions {
                 title: Some("Slipdock".into()),
-                ..Default::default()
+                appears_transparent: under_title_bar,
+                traffic_light_position: under_title_bar.then_some(shell::WINDOW_BUTTONS),
             }),
             ..Default::default()
         };
