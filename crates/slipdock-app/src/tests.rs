@@ -383,6 +383,50 @@ fn fill_every_screen(shell: &Entity<Shell>, cx: &mut VisualTestContext) {
     cx.run_until_parked();
 }
 
+/// "Copy command" is drawn on the Dump and on the Load screen, puts the
+/// command that is on show on the clipboard, as it can be pasted, and then
+/// says that it did.
+#[gpui_kit::test]
+fn copy_command_copies_the_command_on_show(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    fill_every_screen(&shell, &mut cx);
+    // High enough that the card under the form is in the window.
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(1040.), gpui_kit::px(3000.)));
+
+    let (dump, load) = shell.read_with(&cx, |shell, _| (shell.dump.clone(), shell.load.clone()));
+    let commands = [
+        (
+            Screen::Dump,
+            dump.read_with(&cx, |view, _| view.preview.clone()),
+        ),
+        (
+            Screen::Load,
+            load.read_with(&cx, |view, _| view.preview.clone()),
+        ),
+    ];
+    for (screen, preview) in commands {
+        let (_, command) = preview.unwrap().unwrap();
+        cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(screen, cx)));
+        cx.run_until_parked();
+        click_label("Copy command", &mut cx);
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default();
+        assert_eq!(copied, command.trim(), "{}", screen.label());
+        assert!(!copied.is_empty());
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find_by_label("Copied").is_some(),
+                "{}: the button says that it copied",
+                screen.label()
+            );
+        });
+    }
+}
+
 /// The cropping guard: at every window size, from the smallest the window
 /// allows to a wide one, nothing on any screen reaches past the right edge
 /// of the window. (Past the bottom is fine: the page scrolls.)
@@ -1152,19 +1196,6 @@ fn a_failed_connection_takes_the_place_of_the_form(cx: &mut TestAppContext) {
     assert!(dump.read_with(&cx, |view, _| view.connect_error.is_none()));
     cx.run_until_parked();
     assert!(dump.read_with(&cx, |view, _| view.connect_error.is_some()));
-}
-
-/// The size of a dump is put on a fixed scale of five steps.
-#[test]
-fn the_size_of_a_dump_has_five_steps() {
-    use crate::widgets::size_step;
-    const MB: u64 = 1024 * 1024;
-    assert_eq!(size_step(0), 1);
-    assert_eq!(size_step(10 * MB - 1), 1);
-    assert_eq!(size_step(10 * MB), 2);
-    assert_eq!(size_step(500 * MB), 3);
-    assert_eq!(size_step(5 * 1024 * MB), 4);
-    assert_eq!(size_step(u64::MAX), 5);
 }
 
 /// Every profile has a band once the window is open, a dump shows the band

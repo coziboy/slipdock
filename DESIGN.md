@@ -297,6 +297,7 @@ The library's buttons, in four forms.
 
 ### Command and log blocks
 - **Mono block** (`widgets::mono`): a command on Quiet with a line in Rule, 12px padding, 14px monospace, one element per line so that breaks and leading spaces are kept.
+- **Command preview** (`widgets::preview`): what "Show command" shows on the Dump and the Load screen. From the top: "Nothing was executed." with the neutral icon in Dim, the summary, then the command block under its Label title, with an outlined "Copy command" button at the end of the title's line. The button says "Copied" with a check for two seconds. In the block the options stand 24px in from the first line, and the value of an option is an element of its own, so a long path wraps under where it started; in a narrow window the value moves under its option.
 - **Quoted name:** a name the user has to type or confirm is set off on Quiet in bold or semibold monospace.
 - **Log box** (`log_view.rs`): the library's read-only editor with a copy button above it. Scroll bars are always on show, so the box says at a glance that there is more.
 

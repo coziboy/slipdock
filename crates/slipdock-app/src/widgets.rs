@@ -20,7 +20,6 @@
 use std::path::Path;
 
 use gpui_kit::component::button::*;
-use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
@@ -223,38 +222,6 @@ pub fn profile_strip(name: Option<&str>, server: Option<&str>, cx: &App) -> Div 
                     )
                 }),
         )
-}
-
-/// How large a dump is, on a fixed scale of five steps: under 10 MB, under
-/// 100 MB, under 1 GB, under 10 GB, and more.
-pub fn size_step(bytes: u64) -> usize {
-    const MB: u64 = 1024 * 1024;
-    [10 * MB, 100 * MB, 1024 * MB, 10 * 1024 * MB]
-        .iter()
-        .filter(|limit| bytes >= **limit)
-        .count()
-        + 1
-}
-
-/// The size of a dump as five bars of rising height, filled up to its step,
-/// so that a large dump is seen before its number is read.
-fn size_bars(bytes: u64, cx: &App) -> Div {
-    let theme = cx.theme();
-    let step = size_step(bytes);
-    h_flex()
-        .items_end()
-        .flex_shrink_0()
-        .gap(px(2.))
-        .children((1..=5).map(|bar| {
-            div()
-                .w(px(3.))
-                .h(px(2. + 2. * bar as f32))
-                .bg(if bar <= step {
-                    theme.muted_foreground
-                } else {
-                    theme.border
-                })
-        }))
 }
 
 /// A bordered box that groups related things.
@@ -485,17 +452,13 @@ pub fn dump_summary(dump: &DumpInfo, cx: &App) -> Div {
         )
 }
 
-/// What a dump holds: `65 tables · 15M`, then its size as bars.
+/// What a dump holds: `65 tables · 15M`.
 pub fn dump_stats(dump: &DumpInfo, cx: &App) -> Div {
-    h_flex()
-        .items_center()
-        .gap_2()
-        .flex_shrink_0()
-        .child(hint(
-            format!("{} tables · {}", dump.tables, dumps::human_size(dump.size)),
-            cx,
-        ))
-        .child(size_bars(dump.size, cx))
+    hint(
+        format!("{} tables · {}", dump.tables, dumps::human_size(dump.size)),
+        cx,
+    )
+    .flex_shrink_0()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -593,29 +556,176 @@ pub fn mono(text: &str, cx: &App) -> Div {
     block
 }
 
-/// What "Show command" shows: the summary, the command with a button that
-/// copies it, and that nothing ran.
-pub fn preview(summary: &[Line], command: &str, cx: &App) -> Div {
-    card(cx)
-        .child(
-            // The title, with the copy button at the end of its line.
+/// A command as `Invocation::preview` writes it, one option per line, on
+/// the fill of a `mono` block.
+///
+/// GPUI concept: **a hanging indent**. Text that wraps starts again at the
+/// left edge of its own element. So the spaces that lead a line become
+/// padding of the row, and the value of an option is an element of its own:
+/// a long path then continues under where it started, not under the `env`
+/// of the first line.
+///
+/// What is drawn is what `copy_button` copies: only the place of the line
+/// breaks differs.
+fn command_block(command: &str, cx: &App) -> Div {
+    let theme = cx.theme();
+    let mut block = v_flex()
+        .p_3()
+        .gap_0p5()
+        .min_w_0()
+        .rounded(theme::RADIUS)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.muted)
+        .font_family(theme.mono_font_family.clone())
+        .text_sm();
+    for line in command.lines() {
+        let text = line.trim();
+        // An option with a value: `--outputdir /dumps/example \`.
+        let (option, value) = match text.split_once(' ') {
+            // The mark that the command goes on (`--routines \`) is no value.
+            Some((option, value)) if option.starts_with('-') && value != "\\" => {
+                (option, Some(value))
+            }
+            _ => (text, None),
+        };
+        // Every line after the first belongs to the tool named in the first.
+        let continued = line.starts_with("   ");
+        block = block.child(
             h_flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .child(subheading("Command", cx))
-                .child(
-                    Clipboard::new("copy-command")
-                        .value(command.trim().to_string())
-                        .tooltip("Copy the command"),
-                ),
-        )
+                .flex_wrap()
+                .items_start()
+                .gap_x_2()
+                .min_w_0()
+                .when(continued, |row| row.pl_6())
+                .child(match value {
+                    // May get narrower than its text: an option can be one
+                    // long word (`--tables-list=...`), and that has to wrap.
+                    Some(_) => div().min_w_0().child(option.to_string()),
+                    None => div().flex_1().min_w_0().child(option.to_string()),
+                })
+                .when_some(value, |row, value| {
+                    // In a narrow window the value moves under its option
+                    // and wraps there.
+                    row.child(
+                        div()
+                            .flex_grow(1.)
+                            .flex_basis(px(160.))
+                            .min_w_0()
+                            .child(value.to_string()),
+                    )
+                }),
+        );
+    }
+    block
+}
+
+/// A button that says what it copies, and says "Copied" for two seconds
+/// after it did. The library's `Clipboard` is the same thing as an icon
+/// only; this one is for where the copy is the point of the card.
+///
+/// GPUI concept: **state of an element**. A function that builds elements
+/// keeps nothing between two draws. `Window::use_keyed_state` gives an
+/// element a value that lives as long as an element with this id is drawn,
+/// which is what "was just clicked" needs. Only a component (`RenderOnce`)
+/// gets the window while it is built, so this is one.
+#[derive(IntoElement)]
+struct CopyButton {
+    id: ElementId,
+    label: SharedString,
+    value: SharedString,
+}
+
+fn copy_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+) -> CopyButton {
+    CopyButton {
+        id: id.into(),
+        label: label.into(),
+        value: value.into(),
+    }
+}
+
+impl RenderOnce for CopyButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let copied = window.use_keyed_state(self.id.clone(), cx, |_, _| false);
+        let done = *copied.read(cx);
+        let value = self.value;
+        Button::new(self.id)
+            .outline()
+            .small()
+            .flex_shrink_0()
+            .icon(if done {
+                IconName::Check
+            } else {
+                IconName::Copy
+            })
+            .label(if done { "Copied".into() } else { self.label })
+            // Off while it says "Copied", so one timer runs at a time.
+            .when(!done, |this| {
+                this.on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
+                    copied.update(cx, |copied, cx| {
+                        *copied = true;
+                        cx.notify();
+                    });
+                    let copied = copied.clone();
+                    cx.spawn(async move |cx| {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(2))
+                            .await;
+                        let _ = copied.update(cx, |copied, cx| {
+                            *copied = false;
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                })
+            })
+    }
+}
+
+/// What "Show command" shows. From the top: that nothing ran, the summary,
+/// then the command under a button that copies it.
+pub fn preview(summary: &[Line], command: &str, cx: &App) -> Div {
+    let muted = cx.theme().muted_foreground;
+    card(cx)
+        // First, because it is what the reader has to know before the rest:
+        // on the Load screen the summary names a database that would be
+        // overwritten.
+        .child(marked(
+            IconName::Info,
+            muted,
+            div().child("Nothing was executed."),
+        ))
         .child(lines(summary, cx))
-        .child(mono(command, cx))
+        .child(
+            v_flex()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    // The title of the block, with the button that copies
+                    // the block at the end of its line.
+                    h_flex()
+                        .flex_wrap()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .min_w_0()
+                        .child(subheading("Command", cx))
+                        .child(copy_button(
+                            "copy-command",
+                            "Copy command",
+                            command.trim().to_string(),
+                        )),
+                )
+                .child(command_block(command, cx)),
+        )
         .when(command.contains("slipdock-"), |this| {
             this.child(hint(job::TEMPORARY_DEFAULTS_NOTE, cx))
         })
-        .child(hint("Nothing was executed.", cx))
 }
 
 /// An icon with a line of text beside it; the text wraps.

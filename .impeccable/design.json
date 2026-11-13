@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-11-13T00:00:00Z",
+  "generatedAt": "2026-11-13T09:10:00Z",
   "title": "Design System: Slipdock",
   "extensions": {
     "colorMeta": {
@@ -255,6 +255,14 @@
       "description": "A command or a log on the quiet fill, in the monospace font, one element per line. An HTML approximation for the panel: the app draws this in Rust with GPUI, and the platform fonts stand in as system-ui and ui-monospace.",
       "html": "<div class=\"ds-mono\"><div>mydumper \\</div><div>  --database example_db \\</div><div>  --outputdir ~/dumps/example_db__staging__20260102-030405</div></div>",
       "css": ".ds-mono { padding: 12px; background: #ECEDF1; color: #17161A; border: 1px solid #D9DBE1; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 14px; white-space: pre-wrap; }"
+    },
+    {
+      "name": "Command Preview",
+      "kind": "custom",
+      "refersTo": "mono-block",
+      "description": "What \"Show command\" shows on the Dump and the Load screen: \"Nothing was executed.\" first, then the command block under its Label title with an outlined \"Copy command\" button at the end of the title's line. The options stand 24px in, and the value of an option wraps under where it started. An HTML approximation for the panel: the app draws this in Rust with GPUI (widgets::preview), and the platform fonts stand in as system-ui and ui-monospace.",
+      "html": "<div class=\"ds-preview\"><div class=\"ds-preview-note\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 16v-4\"/><path d=\"M12 8h.01\"/></svg><span>Nothing was executed.</span></div><div class=\"ds-preview-head\"><span class=\"ds-preview-label\">Command</span><button class=\"ds-preview-copy\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect width=\"14\" height=\"14\" x=\"8\" y=\"8\" rx=\"2\"/><path d=\"M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2\"/></svg>Copy command</button></div><div class=\"ds-preview-block\"><div class=\"ds-preview-line\">mydumper \\</div><div class=\"ds-preview-line ds-preview-option\"><span>--database</span><span>example_db \\</span></div><div class=\"ds-preview-line ds-preview-option\"><span>--outputdir</span><span>/home/example/dumps/example_db__staging__20260102-030405 \\</span></div><div class=\"ds-preview-line ds-preview-option\"><span>--compress</span><span>ZSTD</span></div></div></div>",
+      "css": ".ds-preview { display: flex; flex-direction: column; gap: 12px; padding: 16px; background: #FFFFFF; color: #17161A; border: 1px solid #D9DBE1; border-radius: 4px; font-family: system-ui, sans-serif; font-size: 16px; } .ds-preview-note { display: flex; align-items: center; gap: 8px; } .ds-preview-note svg { color: #5E5C66; flex-shrink: 0; } .ds-preview-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; } .ds-preview-label { font-size: 12px; font-weight: 600; text-transform: uppercase; color: #5E5C66; } .ds-preview-copy { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; background: #FFFFFF; color: #17161A; border: 1px solid #8E8C98; border-radius: 4px; font: inherit; font-size: 14px; cursor: pointer; } .ds-preview-copy:hover { background: #ECEDF1; } .ds-preview-copy:focus-visible { outline: 2px solid #2B6FE0; outline-offset: 1px; } .ds-preview-block { display: flex; flex-direction: column; gap: 2px; padding: 12px; background: #ECEDF1; border: 1px solid #D9DBE1; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 14px; } .ds-preview-option { display: flex; flex-wrap: wrap; column-gap: 8px; padding-left: 24px; } .ds-preview-option span:last-child { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }"
     }
   ],
   "narrative": {
