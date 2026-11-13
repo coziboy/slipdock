@@ -43,6 +43,12 @@ pub struct Settings {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub left_out: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    /// The colour band the app shows a profile with, as a number from 0.
+    /// It is kept here so that a profile has the same band on every start,
+    /// and no two profiles share one while there are bands left. The command
+    /// line tool does not read this.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bands: BTreeMap<String, u8>,
     /// Choices that hold for every dump and load, whatever the profile.
     #[serde(default, skip_serializing_if = "Options::is_empty")]
     pub options: Options,
@@ -246,6 +252,35 @@ impl Settings {
             }
         }
     }
+
+    /// The band of a profile, if it has one.
+    pub fn band(&self, profile: &str) -> Option<u8> {
+        self.bands.get(profile).copied()
+    }
+
+    /// Gives every profile in `profiles` a band out of `count`, and forgets
+    /// the bands of profiles that are gone. A profile that has a band keeps
+    /// it. A new one gets the lowest band no profile has; with more profiles
+    /// than bands, the band the fewest profiles have. Returns whether
+    /// anything changed, so the caller knows to save.
+    pub fn assign_bands(&mut self, profiles: &[String], count: u8) -> bool {
+        let before = self.bands.len();
+        self.bands
+            .retain(|name, band| *band < count && profiles.contains(name));
+        let mut changed = self.bands.len() != before;
+        for name in profiles {
+            if self.bands.contains_key(name) {
+                continue;
+            }
+            let uses = |band: u8| self.bands.values().filter(|used| **used == band).count();
+            let Some(band) = (0..count).min_by_key(|band| uses(*band)) else {
+                break;
+            };
+            self.bands.insert(name.clone(), band);
+            changed = true;
+        }
+        changed
+    }
 }
 
 #[cfg(test)]
@@ -368,5 +403,30 @@ mod tests {
         fs::write(Settings::file(config.path()), "tools = 3").unwrap();
         let error = Settings::load(config.path()).unwrap_err().to_string();
         assert!(error.contains("settings.toml is not valid"), "{error}");
+    }
+
+    #[test]
+    fn a_profile_keeps_its_band() {
+        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        let mut settings = Settings::default();
+        assert!(settings.assign_bands(&names(&["local", "staging"]), 3));
+        assert_eq!(settings.band("local"), Some(0));
+        assert_eq!(settings.band("staging"), Some(1));
+
+        // A new profile takes a free band; the others keep theirs.
+        assert!(settings.assign_bands(&names(&["alpha", "local", "staging"]), 3));
+        assert_eq!(settings.band("alpha"), Some(2));
+        assert_eq!(settings.band("local"), Some(0));
+        assert!(!settings.assign_bands(&names(&["alpha", "local", "staging"]), 3));
+
+        // A deleted profile gives its band back, and the next one takes it.
+        assert!(settings.assign_bands(&names(&["alpha", "staging", "zeta"]), 3));
+        assert_eq!(settings.band("local"), None);
+        assert_eq!(settings.band("zeta"), Some(0));
+        assert_eq!(settings.band("staging"), Some(1));
+
+        // More profiles than bands: the band used least is shared.
+        assert!(settings.assign_bands(&names(&["alpha", "more", "staging", "zeta"]), 3));
+        assert_eq!(settings.band("more"), Some(0));
     }
 }

@@ -146,7 +146,8 @@ Config folder: `$SLIPDOCK_CONFIG_DIR`, else `$XDG_CONFIG_HOME/slipdock`, else
   Slipdock changes single lines and keeps your comments and any keys it does
   not know. Do not put a comment at the end of a line: mydumper reads
   `value  # note` as the value.
-- `settings.toml`: a fixed path per tool, when you set one.
+- `settings.toml`: a fixed path per tool, when you set one, and the colour
+  band the app shows each profile with.
 
 A dump is a folder `<db>__<profile>__<YYYYmmdd-HHMMSS>` in the dump folder.
 Beside it: `<name>.log`, and `<name>.omit` when tables were excluded. Each
