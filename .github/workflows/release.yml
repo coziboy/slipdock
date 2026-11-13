@@ -1,0 +1,65 @@
+# Builds Slipdock.app for Apple Silicon and attaches it to a GitHub Release.
+#
+# - Push a tag like v0.1.0: builds, then creates the release with the zip.
+# - Run by hand (Actions > release > Run workflow): builds and keeps the zip
+#   as a workflow artifact, with no release.
+#
+# The app is sealed with an ad hoc signature and is not notarized. The README
+# section "Install on macOS" tells the user how to open it the first time.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP: target/release/bundle/osx/Slipdock.app
+  ZIP: Slipdock-macos-arm64.zip
+
+jobs:
+  macos:
+    runs-on: macos-latest # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustup reads rust-toolchain.toml and fetches the pinned compiler.
+      - name: Show the toolchain
+        run: rustup show
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --locked --version 0.12.0
+
+      # Must run from the repository root, or cargo-bundle leaves out the
+      # icon and Info.ext.plist without an error.
+      - name: Build the bundle
+        run: cargo bundle --release -p slipdock-app --format osx
+
+      - name: Sign with an ad hoc signature
+        run: codesign --force --sign - "$APP"
+
+      - name: Verify the bundle is whole
+        run: |
+          test -f "$APP/Contents/Resources/Slipdock.icns"
+          plutil -extract LSEnvironment.PATH raw "$APP/Contents/Info.plist"
+          codesign --verify --verbose "$APP"
+          lipo -archs "$APP/Contents/MacOS/"*
+
+      # ditto keeps the bundle layout and the signature; plain zip may not.
+      - name: Zip the app
+        run: ditto -c -k --keepParent "$APP" "$ZIP"
+
+      - name: Keep the zip as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Slipdock-macos-arm64
+          path: ${{ env.ZIP }}
+
+      - name: Create the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "$ZIP" --title "$GITHUB_REF_NAME" --generate-notes

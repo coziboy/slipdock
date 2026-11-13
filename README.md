@@ -36,6 +36,25 @@ slipdock tools install    # shows the command; asks before running it
   the steps and does not run them.
 - **Windows:** mydumper has no Windows builds. Use Slipdock inside WSL.
 
+## Install on macOS
+
+Each release on the repository's Releases page has `Slipdock-macos-arm64.zip`,
+built for Apple Silicon. Unzip it and move `Slipdock.app` to `/Applications`.
+
+The app is not notarized by Apple, so macOS blocks it the first time. Do one
+of these once:
+
+- Open the app and close the warning. Then go to **System Settings > Privacy &
+  Security**, scroll to **Security** and click **Open Anyway**.
+- Or remove the download flag in a terminal:
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/Slipdock.app
+  ```
+
+An app you build yourself (see below) is never blocked. On an Intel Mac, build
+from source.
+
 ## Build
 
 ```sh
@@ -69,8 +88,17 @@ Started from another folder, cargo-bundle does not find the icon or
 `Info.ext.plist` and leaves them out without an error.
 
 cargo-bundle does not sign the bundle, so the `codesign` line seals it with an
-ad hoc signature. That is enough for the Mac that built it. To give the app
-to someone else it needs a Developer ID signature and notarization.
+ad hoc signature. That is enough for the Mac that built it. A copy that
+someone else downloads also runs, but macOS blocks it until they allow it
+(see [Install on macOS](#install-on-macos)); only a Developer ID signature and
+notarization remove that step.
+
+`.github/workflows/release.yml` runs these steps on GitHub for every `v*` tag
+and attaches the zipped app to a release:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
 
 The icon is `crates/slipdock-app/macos/icon.svg`; cargo-bundle converts it.
 Without `--format osx` it also builds `Slipdock.dmg`.
