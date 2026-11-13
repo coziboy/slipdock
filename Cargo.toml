@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/slipdock-core", "crates/slipdock-cli", "crates/slipdock-app"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
@@ -11,7 +11,7 @@ license = "MIT OR Apache-2.0"
 # Every version is pinned exactly ("=") and Cargo.lock is committed, so a
 # build today and a build next year use the same code.
 [workspace.dependencies]
-slipdock-core = { path = "crates/slipdock-core", version = "=0.1.0" }
+slipdock-core = { path = "crates/slipdock-core", version = "=0.2.0" }
 
 anstream = "=1.0.0"
 anstyle = "=1.0.14"
