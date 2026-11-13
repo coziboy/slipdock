@@ -704,9 +704,9 @@ impl Render for ProfilesView {
                     ),
             );
         }
-        if self.profiles.is_empty() {
-            list = list.child(widgets::hint("No profiles yet.", cx));
-        }
+        // Without profiles there is no list: the card that says so, with the
+        // one "New profile" button, takes the whole width.
+        let empty = self.profiles.is_empty();
 
         let form = match selected {
             Some(profile) => self.render_form(profile, cx),
@@ -756,13 +756,17 @@ impl Render for ProfilesView {
                         .flex_grow(1.)
                         .flex_basis(px(280.)),
                     )
-                    .child(
-                        Button::new("new-profile")
-                            .outline()
-                            .icon(IconName::Plus)
-                            .label("New profile")
-                            .on_click(cx.listener(|this, _, window, cx| this.open_new(window, cx))),
-                    ),
+                    .when(!empty, |this| {
+                        this.child(
+                            Button::new("new-profile")
+                                .outline()
+                                .icon(IconName::Plus)
+                                .label("New profile")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.open_new(window, cx)),
+                                ),
+                        )
+                    }),
             )
             .when_some(self.message.clone(), |this, (ok, text)| {
                 let tone = if ok { Tone::Success } else { Tone::Danger };
@@ -776,7 +780,9 @@ impl Render for ProfilesView {
                     .flex_wrap()
                     .items_start()
                     .gap_5()
-                    .child(list.flex_grow(1.).flex_basis(px(250.)))
+                    .when(!empty, |this| {
+                        this.child(list.flex_grow(1.).flex_basis(px(250.)))
+                    })
                     .child(form.flex_grow(3.).flex_basis(px(380.))),
             )
     }
