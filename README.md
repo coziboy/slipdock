@@ -15,15 +15,18 @@
   </p>
 </div>
 
+> **Why "Slipdock"?** A slip dock is where a ship is hauled out of the water
+> and later launched again. Slipdock does the same with a database: a dump
+> takes it out, a load puts it back.
+
 Slipdock is a desktop app and a command line tool for copying MySQL and
 MariaDB databases. You take a dump of a database, keep it, and load it into
 another one: to refresh a development database from staging, to keep
 backups, or to move a database to another server.
 
-The work itself is done by mydumper and myloader, which are fast but take
-many options. Slipdock keeps one connection file per environment, builds the
-command for you, shows the progress, and tells you at the end whether the
-dump or load is complete.
+mydumper and myloader do the work. They are fast but take many options, so
+Slipdock keeps one connection file per environment, builds the command,
+shows the progress and reports whether the dump or load is complete.
 
 <p align="center">
   <img src="docs/images/dump.png" width="760"
