@@ -67,6 +67,15 @@ pub fn taken(name: &str) -> Option<String> {
     Some(time.strftime("%-d %b %Y, %H:%M").to_string())
 }
 
+/// The profile a dump was taken with, read from the `<db>__<profile>__<time>`
+/// name Slipdock gives a dump. `None` for a folder named differently.
+pub fn profile_of(name: &str) -> Option<&str> {
+    taken(name)?;
+    let (rest, _) = name.rsplit_once("__")?;
+    let (_, profile) = rest.rsplit_once("__")?;
+    (!profile.is_empty()).then_some(profile)
+}
+
 /// Deletes a dump for good: the folder and the files Slipdock wrote beside
 /// it (`<dump>.log`, `<dump>.omit`, `<dump>__load_*.log`).
 pub fn delete(dump: &Path) -> Result<()> {
@@ -300,6 +309,18 @@ mod tests {
         assert_eq!(info.size, 64);
         assert_eq!(info.source_db.as_deref(), Some("example_db"));
         assert_eq!(sql_file_count(&dir), 6);
+    }
+
+    #[test]
+    fn the_profile_comes_from_the_name() {
+        assert_eq!(
+            profile_of("example_db__example__20260102-030405"),
+            Some("example")
+        );
+        assert_eq!(profile_of("a__b__example__20260102-030405"), Some("example"));
+        assert_eq!(profile_of("example__20260102-030405"), None);
+        assert_eq!(profile_of("example_db__example__today"), None);
+        assert_eq!(profile_of("by-hand"), None);
     }
 
     #[test]
