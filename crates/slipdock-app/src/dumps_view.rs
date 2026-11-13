@@ -10,9 +10,10 @@ use std::path::PathBuf;
 use gpui_kit::component::button::*;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, IndexPath, Sizable, WindowExt as _, h_flex,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -313,35 +314,19 @@ impl DumpsView {
     ) -> Entity<DumpLogs> {
         // The builder below may run many times, so what the dialog shows
         // is a view that is made once, here.
-        let logs = cx.new(|cx| DumpLogs::new(logs, cx));
+        let logs = cx.new(|cx| DumpLogs::new(logs, window, cx));
         let body = logs.clone();
         window.open_dialog(cx, move |dialog, _, _| {
             let body = body.clone();
             dialog
                 .title(format!("Logs of {name}"))
                 .w(px(760.))
-                .child(
-                    // A log scrolls in its own box, so this box scrolls only
-                    // when the dialog is too low for all of it (many
-                    // choices, a low window). `occlude` keeps the scroll
-                    // from the page behind it. `occlude` is on a
-                    // box of its own, around the one that scrolls:
-                    // `overflow_y_scrollbar` moves what is set on its
-                    // element to the content that scrolls, and there
-                    // `occlude` would cover the scroll area itself, which
-                    // then never gets the wheel.
-                    div().occlude().child(
-                        // `overflow_y_scrollbar` is `overflow_y_scroll` with
-                        // a scroll bar drawn over the right edge; the
-                        // padding keeps the text out from under it.
-                        div()
-                            .max_h(px(420.))
-                            .pr_4()
-                            .child(body)
-                            .overflow_y_scrollbar()
-                            .id("dump-logs"),
-                    ),
-                )
+                // No box that scrolls around the body: the dialog is no
+                // higher than the window and scrolls what does not fit, and
+                // the body has one height however many logs there are (see
+                // `DumpLogs`). A box with a height of its own here cut the
+                // log box off at its bottom.
+                .child(body)
                 .footer(
                     h_flex().justify_end().child(
                         Button::new("logs-close")
@@ -708,25 +693,52 @@ impl Render for DumpsView {
 }
 
 /// The logs beside a dump, as the logs dialog shows them: one at a time,
-/// with a row of choices when there are several.
+/// with a list to pick from when there are several.
 ///
 /// One at a time, because a log box takes the wheel while the pointer is
 /// on it. Several boxes under each other, in a dialog that scrolls too,
-/// would leave little room to scroll the dialog from.
+/// would leave little room to scroll the dialog from. The list is one that
+/// drops down, because a dump can be loaded any number of times: the
+/// dialog is as high with thirty logs as with two, and all of the log box
+/// is in it.
 pub(crate) struct DumpLogs {
     logs: Vec<dumps::DumpLog>,
     /// The log box of each log, made once: it keeps where it is scrolled to.
     pub(crate) views: Vec<Entity<LogView>>,
     /// Which log is on show.
     pub(crate) shown: usize,
+    /// The list the log is picked from.
+    pub(crate) picker: Entity<SelectState<Vec<LogChoice>>>,
+    _observe_picker: Subscription,
+}
+
+/// A log in the list of the logs dialog: its title, and its place in
+/// [`DumpLogs::logs`]. The place is what tells two logs apart, since two
+/// loads within one minute have one title.
+#[derive(Clone)]
+pub(crate) struct LogChoice {
+    index: usize,
+    title: SharedString,
+}
+
+impl SelectItem for LogChoice {
+    type Value = usize;
+
+    fn title(&self) -> SharedString {
+        self.title.clone()
+    }
+
+    fn value(&self) -> &usize {
+        &self.index
+    }
 }
 
 /// The rows of a log box in the dialog: few enough that the dialog shows
-/// all of it without scrolling.
+/// all of it in a window of the size the app opens with.
 const DIALOG_LOG_ROWS: usize = 12;
 
 impl DumpLogs {
-    fn new(logs: Vec<dumps::DumpLog>, cx: &mut Context<Self>) -> Self {
+    fn new(logs: Vec<dumps::DumpLog>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let views = logs
             .iter()
             .map(|log| {
@@ -737,10 +749,29 @@ impl DumpLogs {
                 })
             })
             .collect();
+        let choices: Vec<LogChoice> = logs
+            .iter()
+            .enumerate()
+            .map(|(index, log)| LogChoice {
+                index,
+                title: log.title.clone().into(),
+            })
+            .collect();
+        let first = (!choices.is_empty()).then(|| IndexPath::new(0));
+        let picker = cx.new(|cx| SelectState::new(choices, first, window, cx));
+        let _observe_picker = cx.subscribe(&picker, |this, _, event, cx| {
+            let SelectEvent::Confirm(picked) = event;
+            if let Some(index) = picked {
+                this.shown = *index;
+                cx.notify();
+            }
+        });
         DumpLogs {
             logs,
             views,
             shown: 0,
+            picker,
+            _observe_picker,
         }
     }
 }
@@ -757,36 +788,26 @@ impl Render for DumpLogs {
         v_flex()
             .gap_2()
             .min_w_0()
-            .when(self.logs.len() > 1, |this| {
-                let mut choices = widgets::wrap_row().pb_2();
-                for (index, log) in self.logs.iter().enumerate() {
-                    choices = choices.child(
-                        widgets::choice(
-                            ("log-choice", index),
-                            log.title.clone(),
-                            index == self.shown,
-                        )
-                        .small()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.shown = index;
-                            cx.notify();
-                        })),
-                    );
-                }
-                this.child(choices)
-            })
             .child(
                 h_flex()
                     .flex_wrap()
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .child(
+                    // The name of the log on show. With several logs it is
+                    // the list they are picked from.
+                    .child(if self.logs.len() > 1 {
+                        div()
+                            .flex_1()
+                            .min_w(px(240.))
+                            .max_w(px(420.))
+                            .child(Select::new(&self.picker).accessibility_label("Log"))
+                    } else {
                         div()
                             .min_w_0()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(log.title.clone()),
-                    )
+                            .child(log.title.clone())
+                    })
                     .child(
                         Button::new("open-log")
                             .small()

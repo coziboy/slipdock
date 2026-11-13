@@ -1258,6 +1258,13 @@ fn wheel(position: gpui_kit::Point<gpui_kit::Pixels>, delta: f32, cx: &mut Visua
     cx.run_until_parked();
 }
 
+/// Clicks the middle of the one thing with this label.
+fn click_label(label: &'static str, cx: &mut VisualTestContext) {
+    let position = bounds_of(label, cx).center();
+    cx.simulate_click(position, gpui_kit::Modifiers::default());
+    cx.run_until_parked();
+}
+
 /// Opens the logs dialog of the one dump of the sandbox, which has a long
 /// dump log and `loads` load logs beside it.
 fn open_logs_dialog(
@@ -1335,29 +1342,9 @@ fn the_logs_dialog_shows_a_long_log_in_a_box_that_scrolls(cx: &mut TestAppContex
         assert!(window.find_by_label("Go to end").visible());
     });
 
-    // The other log is one click away.
-    cx.update(|window, cx| {
-        let choice = window.find_by_label("Load into example, 2 Jan 2026, 00:00");
-        let position = choice.bounds().center();
-        window.dispatch_event(
-            gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
-                position,
-                button: gpui_kit::MouseButton::Left,
-                click_count: 1,
-                ..Default::default()
-            }),
-            cx,
-        );
-        window.dispatch_event(
-            gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
-                position,
-                button: gpui_kit::MouseButton::Left,
-                click_count: 1,
-                ..Default::default()
-            }),
-            cx,
-        );
-    });
+    // The other log is picked from the list that drops down.
+    click_label("Log", &mut cx);
+    cx.simulate_keystrokes("down enter");
     cx.run_until_parked();
     assert_eq!(logs.read_with(&cx, |logs, _| logs.shown), 1);
     cx.update(|window, cx| window.render_frame(cx));
@@ -1365,20 +1352,98 @@ fn the_logs_dialog_shows_a_long_log_in_a_box_that_scrolls(cx: &mut TestAppContex
     assert_eq!(other.read_with(&cx, |view, cx| view.text(cx)), "load 0");
 }
 
-/// With more in the logs dialog than it has room for, the dialog scrolls
-/// with the wheel.
-#[gpui_kit::test]
-fn a_high_logs_dialog_scrolls(cx: &mut TestAppContext) {
-    let (_temp, _logs, mut cx) = open_logs_dialog(28, cx);
-    let first = |cx: &mut VisualTestContext| {
-        cx.update(|window, cx| {
-            window.render_frame(cx);
-            window.find_by_label("Dump").bounds()
-        })
-    };
-    let before = first(&mut cx);
+/// Where the one thing with this label is drawn, after a fresh frame.
+fn bounds_of(
+    label: &'static str,
+    cx: &mut VisualTestContext,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find_by_label(label).bounds()
+    })
+}
+
+/// In a window of the size the app opens with, the logs dialog of a dump
+/// with this many load logs shows all of the log box: the box ends above
+/// the Close button, the dialog ends in the window, and the dialog has
+/// nothing to scroll (so nothing of it is cut off).
+fn the_log_box_is_whole(loads: usize, cx: &mut TestAppContext) {
+    let (_temp, logs, mut cx) = open_logs_dialog(loads, cx);
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(1040.), gpui_kit::px(760.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.render_frame(cx));
+    let view = logs.read_with(&cx, |logs, _| logs.views[0].clone());
+    let bounds = view.read_with(&cx, |view, cx| view.bounds(cx));
+    let (close_top, close_bottom, window_height) = cx.update(|window, _| {
+        let close = window
+            .find_all_by_label("Close")
+            .iter()
+            .map(|close| close.bounds())
+            .fold(None, |low: Option<gpui_kit::Bounds<_>>, next| match low {
+                Some(low) if low.top() > next.top() => Some(low),
+                _ => Some(next),
+            })
+            .unwrap();
+        (close.top(), close.bottom(), window.viewport_size().height)
+    });
+    assert!(bounds.bottom() < close_top, "{bounds:?} {close_top:?}");
+    assert!(close_bottom < window_height);
+
+    // The wheel off the log box moves nothing.
+    let before = bounds_of("Open file", &mut cx);
     wheel(before.center(), -60., &mut cx);
-    assert_eq!(first(&mut cx).top(), before.top() - gpui_kit::px(60.));
+    assert_eq!(bounds_of("Open file", &mut cx), before);
+}
+
+#[gpui_kit::test]
+fn the_logs_dialog_shows_all_of_the_box_with_a_few_loads(cx: &mut TestAppContext) {
+    the_log_box_is_whole(3, cx);
+}
+
+#[gpui_kit::test]
+fn the_logs_dialog_shows_all_of_the_box_with_some_loads(cx: &mut TestAppContext) {
+    the_log_box_is_whole(7, cx);
+}
+
+#[gpui_kit::test]
+fn the_logs_dialog_shows_all_of_the_box_with_many_loads(cx: &mut TestAppContext) {
+    the_log_box_is_whole(28, cx);
+}
+
+/// In a window too low for the logs dialog, the dialog scrolls with the
+/// wheel, and the page behind it does not.
+#[gpui_kit::test]
+fn the_logs_dialog_scrolls_in_a_low_window(cx: &mut TestAppContext) {
+    let (_temp, _logs, mut cx) = open_logs_dialog(1, cx);
+    // Lower than the app lets its window get: low enough that the page
+    // behind the dialog has something to scroll too.
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(1040.), gpui_kit::px(260.)));
+    cx.run_until_parked();
+    let before = bounds_of("Open file", &mut cx);
+    let behind = bounds_of("Refresh", &mut cx);
+    wheel(before.center(), -20., &mut cx);
+    assert_eq!(
+        bounds_of("Open file", &mut cx).top(),
+        before.top() - gpui_kit::px(20.)
+    );
+    assert_eq!(bounds_of("Refresh", &mut cx), behind);
+
+    // At its end the dialog has nothing more to scroll, and the wheel
+    // still does not go through to the page.
+    wheel(before.center(), -5000., &mut cx);
+    let at_end = bounds_of("Open file", &mut cx);
+    wheel(before.center(), -20., &mut cx);
+    assert_eq!(bounds_of("Open file", &mut cx), at_end);
+    assert_eq!(bounds_of("Refresh", &mut cx), behind);
+
+    // Without the dialog, the same wheel scrolls the page.
+    cx.update(|window, cx| window.close_dialog(cx));
+    cx.run_until_parked();
+    wheel(before.center(), -20., &mut cx);
+    assert_eq!(
+        bounds_of("Refresh", &mut cx).top(),
+        behind.top() - gpui_kit::px(20.)
+    );
 }
 
 /// The log box of a run holds every line that was read, keeps its place
