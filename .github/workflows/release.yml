@@ -6,6 +6,14 @@
 #
 # The app is sealed with an ad hoc signature and is not notarized. The README
 # section "Install" tells the user how to open it the first time.
+#
+# Caching: cargo-bundle and the compiled dependencies are kept between runs.
+# GitHub lets a run read the caches of its own ref and of the default branch
+# only, so a cache saved by one tag is of no use to the next tag. The caches
+# are therefore saved by runs on main, and a tag run only reads them. To fill
+# or refresh them, run the workflow by hand on main (before a release, or
+# after the dependencies changed). A run without a cache still works; it
+# just takes about 15 minutes.
 name: release
 
 on:
@@ -19,6 +27,7 @@ permissions:
 env:
   APP: target/release/bundle/osx/Slipdock.app
   ZIP: Slipdock-macos-arm64.zip
+  CARGO_BUNDLE_VERSION: 0.12.0
 
 jobs:
   macos:
@@ -30,8 +39,36 @@ jobs:
       - name: Show the toolchain
         run: rustup show
 
+      # The dependencies: the downloaded crates and what was compiled from
+      # them in target/. The key holds the compiler version and Cargo.lock,
+      # so a change of either starts from the nearest older cache. The
+      # crates of this repository are always compiled again.
+      - name: Restore the compiled dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # cargo-bundle has its own cache below.
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Building cargo-bundle takes about 8 minutes, and it changes only
+      # when its version here does.
+      - name: Restore cargo-bundle
+        id: cargo-bundle
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cargo/bin/cargo-bundle
+          key: cargo-bundle-${{ env.CARGO_BUNDLE_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
       - name: Install cargo-bundle
-        run: cargo install cargo-bundle --locked --version 0.12.0
+        if: steps.cargo-bundle.outputs.cache-hit != 'true'
+        run: cargo install cargo-bundle --locked --version "$CARGO_BUNDLE_VERSION"
+
+      - name: Save cargo-bundle
+        if: steps.cargo-bundle.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cargo/bin/cargo-bundle
+          key: ${{ steps.cargo-bundle.outputs.cache-primary-key }}
 
       # Must run from the repository root, or cargo-bundle leaves out the
       # icon and Info.ext.plist without an error.

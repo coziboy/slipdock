@@ -83,6 +83,13 @@ and attaches the zipped app to a release:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
+The workflow keeps cargo-bundle and the compiled dependencies in GitHub's
+cache. A tag run can only read a cache that a run on `main` saved, so start
+the workflow by hand on `main` before a release, or after the dependencies
+changed (Actions > release > Run workflow, or `gh workflow run release.yml`).
+That run builds the app without making a release. Without a cache a release
+still works; it takes about 15 minutes.
+
 The icon is `crates/slipdock-app/macos/icon.svg`; cargo-bundle converts it.
 Without `--format osx` it also builds `Slipdock.dmg`.
 
