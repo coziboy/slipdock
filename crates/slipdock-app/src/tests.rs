@@ -507,14 +507,14 @@ fn report_install_and_dialog_fit_the_smallest_window(cx: &mut TestAppContext) {
         assert_inside(window, width, "run report");
     });
 
-    // The install instructions of a tool can be shown whether it is there or not.
-    cx.update(|_, cx| {
-        shell.update(cx, |shell, cx| shell.show(Screen::Tools, cx));
-        tools.update(cx, |view, cx| {
-            view.show_install(slipdock_core::tools::Tool::Mysql, cx)
-        });
-    });
+    // A tool that is missing brings the install instructions to the Tools
+    // screen. With a package manager there (one that does nothing here), a
+    // system that can run the install draws its button too.
+    fs::remove_file(root.join("bin/mysql")).unwrap();
+    fake_tool(&root.join("bin"), "brew", "");
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Tools, cx)));
     cx.run_until_parked();
+    assert_eq!(tools.read_with(&cx, |view, _| view.installs.len()), 1);
     cx.update(|window, cx| {
         window.render_frame(cx);
         assert_inside(window, width, "install instructions");
@@ -1771,4 +1771,81 @@ fn a_failed_load_shows_all_the_tool_printed(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert_inside(window, width, "failed load report");
     });
+}
+
+/// mydumper and myloader come in one package, so they are one install. It is
+/// offered at the top of the Tools screen, inside the window, and its button
+/// runs the package manager of the search folders, never one from `PATH`.
+#[gpui_kit::test]
+fn missing_tools_are_installed_from_the_top_of_the_tools_screen(cx: &mut TestAppContext) {
+    use slipdock_core::tools::{InstallPlan, Tool};
+    let (_temp, root) = temp_root();
+    let context = sandbox(&root);
+    // A package manager that notes how it was called and "installs" by
+    // putting the two tools back.
+    let (bin, stash, ran) = (root.join("bin"), root.join("stash"), root.join("brew-ran"));
+    fs::create_dir_all(&stash).unwrap();
+    for tool in ["mydumper", "myloader"] {
+        fs::rename(bin.join(tool), stash.join(tool)).unwrap();
+    }
+    fake_tool(
+        &bin,
+        "brew",
+        &format!(
+            "echo \"$@\" > {}\nmv {}/* {}/",
+            ran.display(),
+            stash.display(),
+            bin.display()
+        ),
+    );
+    let (shell, mut cx) = open(cx, context);
+    let tools = shell.read_with(&cx, |shell, _| shell.tools.clone());
+    let height = 760.;
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(1040.), gpui_kit::px(height)));
+    cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Tools, cx)));
+    cx.run_until_parked();
+
+    let installs = tools.read_with(&cx, |view, _| view.installs.clone());
+    assert_eq!(installs.len(), 1, "one install for both tools");
+    assert_eq!(installs[0].tools, [Tool::Mydumper, Tool::Myloader]);
+
+    // Which plan there is depends on the system the test runs on.
+    if !matches!(installs[0].plan, InstallPlan::Command { .. }) {
+        // Steps for the user: there is nothing to press and nothing runs.
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find_by_label("Install").is_none());
+        });
+        tools.update(&mut cx, |view, cx| view.run_install(0, cx));
+        cx.run_until_parked();
+        assert!(!ran.exists());
+        return;
+    }
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let button = window
+            .try_find_by_label("Install")
+            .expect("the install button is drawn");
+        assert!(
+            button.bounds().bottom() <= gpui_kit::px(height),
+            "the install button is inside the window: {:?}",
+            button.bounds()
+        );
+    });
+    tools.update(&mut cx, |view, cx| view.run_install(0, cx));
+    cx.run_until_parked();
+    assert_eq!(fs::read_to_string(&ran).unwrap().trim(), "install mydumper");
+    let (installs, message) =
+        tools.read_with(&cx, |view, _| (view.installs.clone(), view.message.clone()));
+    assert!(installs.is_empty(), "both tools are found again");
+    let (tone, text) = message.expect("the result is shown");
+    assert!(tone == crate::widgets::Tone::Success, "{text}");
+    assert_eq!(text, "Installed mydumper and myloader.");
+
+    // Another check keeps the cards on show while it runs.
+    tools.update(&mut cx, |view, cx| {
+        view.reload(cx);
+        assert!(view.statuses.is_some());
+    });
+    cx.run_until_parked();
 }

@@ -89,8 +89,9 @@ meet this:
 
 **Rules that design work must keep:**
 
-- Slipdock never downloads a tool. It finds what is installed, and otherwise
-  shows the install command and asks before it runs it.
+- Slipdock never downloads a tool itself. It finds what is installed, and
+  otherwise shows the install command of the package manager. The command
+  runs only when the user starts it, with the command in view.
 - A partial dump is never deleted. The folder and the log are shown.
 - A rule goes in `slipdock-core`, and text for the user is built there as
   data in the `report` module. A front end draws a report; it does not write

@@ -258,7 +258,7 @@ The library's buttons, in four forms.
 - **Hover / Active:** primary goes to `ink-hover`, then `ink-active`; danger to `danger-hover`, then `danger-active`.
 
 ### Tags
-- **Style:** the library's tag, outlined and small (`widgets::tag`), in the colour of its tone: success ("ready"), danger ("not found"), warning ("partial", "TLS check off"), and a neutral one ("keychain", "unsaved").
+- **Style:** the library's tag, outlined and small (`widgets::tag`), in the colour of its tone: success ("ready"), danger ("not found", "not working"), warning ("partial", "TLS check off"), and a neutral one ("keychain", "unsaved", "optional"). An optional tool that is not found has the neutral tag, because it has not failed (the Red Rule).
 
 ### Cards / Containers
 - **Corner Style:** 4px.

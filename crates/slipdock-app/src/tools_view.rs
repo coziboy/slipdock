@@ -2,7 +2,6 @@
 //! when one is missing or broken.
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 use gpui_kit::component::Disableable as _;
@@ -14,7 +13,7 @@ use gpui_kit::*;
 use slipdock_core::exec;
 use slipdock_core::platform;
 use slipdock_core::settings::{self, Settings};
-use slipdock_core::tools::{self, InstallPlan, Status, Tool};
+use slipdock_core::tools::{self, Install, InstallPlan, Status, Tool};
 
 use crate::state::{Core, core};
 use crate::widgets::{self, Tone};
@@ -93,12 +92,19 @@ pub struct ToolsView {
     pub(crate) settings_message: Option<(Tool, bool, String)>,
     /// Subscriptions end when they are dropped, so the view keeps them.
     _subscriptions: Vec<Subscription>,
-    /// `None` while the tools are being checked.
-    statuses: Option<Vec<Status>>,
-    /// The install instructions on show, if "Install…" was pressed.
-    install: Option<(Tool, InstallPlan)>,
-    installing: bool,
-    message: Option<String>,
+    /// `None` until the tools were checked for the first time. A later
+    /// check keeps the last result on show, so the page does not go blank.
+    pub(crate) statuses: Option<Vec<Status>>,
+    /// A check is running.
+    checking: bool,
+    /// What to install to get the tools that are missing, one entry for
+    /// each package. Found together with `statuses`.
+    pub(crate) installs: Vec<Install>,
+    /// The plan whose command is running.
+    installing: Option<InstallPlan>,
+    /// What an install or a change of path said. It is drawn above the
+    /// tools, so it is seen wherever the page was scrolled from.
+    pub(crate) message: Option<(Tone, String)>,
 }
 
 impl ToolsView {
@@ -121,8 +127,9 @@ impl ToolsView {
             settings_message: None,
             _subscriptions: subscriptions,
             statuses: None,
-            install: None,
-            installing: false,
+            checking: false,
+            installs: Vec::new(),
+            installing: None,
             message: None,
         };
         view.show_settings(window, cx);
@@ -250,21 +257,36 @@ impl ToolsView {
         )
     }
 
-    /// Checks all tools again. Each check starts the tool once, so it runs
-    /// on a background thread and the result comes back with `this.update`.
+    /// Checks all tools again, and finds what to install for the missing
+    /// ones. Each check starts the tool once, so it runs on a background
+    /// thread and the result comes back with `this.update`.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let ctx = core(cx);
+        self.checking = true;
+        cx.notify();
         cx.spawn(async move |this, cx| {
-            let statuses = cx
+            let (statuses, installs) = cx
                 .background_executor()
                 .spawn(async move {
-                    Tool::ALL
+                    let statuses = Tool::ALL
                         .map(|tool| tools::status(tool, &ctx.settings, &ctx.dirs))
-                        .to_vec()
+                        .to_vec();
+                    let missing: Vec<Tool> = statuses
+                        .iter()
+                        .filter(|status| status.chosen().is_none())
+                        .map(|status| status.tool)
+                        .collect();
+                    let mut dirs = ctx.dirs.path.clone();
+                    dirs.extend(ctx.dirs.usual.iter().cloned());
+                    let managers = platform::package_managers(&dirs);
+                    let installs = tools::installs(&missing, platform::current_os(), &managers);
+                    (statuses, installs)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.statuses = Some(statuses);
+                this.installs = installs;
+                this.checking = false;
                 cx.notify();
             });
         })
@@ -283,7 +305,7 @@ impl ToolsView {
             }
             core.0.settings.save(&core.0.config_dir)
         });
-        self.message = result.err().map(|error| error.to_string());
+        self.message = result.err().map(|error| (Tone::Danger, error.to_string()));
         self.reload(cx);
     }
 
@@ -306,55 +328,70 @@ impl ToolsView {
         .detach();
     }
 
-    pub(crate) fn show_install(&mut self, tool: Tool, cx: &mut Context<Self>) {
-        let ctx = core(cx);
-        let mut dirs = ctx.dirs.path.clone();
-        dirs.extend(ctx.dirs.usual.iter().cloned());
-        let managers = platform::package_managers(&dirs);
-        let plan = tools::install_plan(tool, platform::current_os(), &managers);
-        self.install = Some((tool, plan));
-        self.message = None;
-        cx.notify();
-    }
-
-    /// Runs the install command that is on show. Only reachable through the
-    /// button under the command, so the user has seen exactly what runs.
-    fn run_install(&mut self, cx: &mut Context<Self>) {
-        let Some((_, InstallPlan::Command { program, args })) = self.install.clone() else {
+    /// Runs the command of one entry of `installs`, then checks the tools
+    /// again. The command is on show beside the button that leads here, so
+    /// the user has seen what runs. An entry without a command (steps for
+    /// the user) starts nothing.
+    pub(crate) fn run_install(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(install) = self.installs.get(index) else {
             return;
         };
-        self.installing = true;
-        self.message = Some(format!("Running {program} {} …", args.join(" ")));
+        let InstallPlan::Command { program, args } = install.plan.clone() else {
+            return;
+        };
+        if self.installing.is_some() {
+            return;
+        }
+        let names = install.names();
+        let shown = format!("{program} {}", args.join(" "));
+        let Some(mut command) = tools::install_command(&program, &args, &core(cx).dirs) else {
+            self.message = Some((
+                Tone::Danger,
+                format!("Could not start the install: {program} was not found."),
+            ));
+            cx.notify();
+            return;
+        };
+        self.installing = Some(install.plan.clone());
+        self.message = Some((
+            Tone::Info,
+            format!("Running {shown}. This can take a few minutes."),
+        ));
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    let mut command = Command::new(&program);
-                    command.args(&args);
-                    exec::capture(&mut command, INSTALL_LIMIT)
-                })
+                .spawn(async move { exec::capture(&mut command, INSTALL_LIMIT) })
                 .await;
             let message = match result {
-                Ok(output) if output.success() => "Installed.".to_string(),
+                Ok(output) if output.success() => (Tone::Success, format!("Installed {names}.")),
                 Ok(output) => {
-                    let text = output.stderr.trim();
+                    // The reason is at the end of what the command printed.
+                    let text = match output.stderr.trim() {
+                        "" => output.stdout.trim(),
+                        errors => errors,
+                    };
                     let tail: Vec<&str> = text.lines().rev().take(6).collect();
                     let tail: Vec<&str> = tail.into_iter().rev().collect();
-                    format!("The install did not finish:\n{}", tail.join("\n"))
+                    (
+                        Tone::Danger,
+                        format!("{shown} did not finish:\n{}", tail.join("\n")),
+                    )
                 }
-                Err(exec::CaptureError::TimedOut) => {
-                    "The install took too long and was stopped.".to_string()
-                }
-                Err(exec::CaptureError::NotStarted(error)) => {
-                    format!("Could not start the install: {error}")
-                }
+                Err(exec::CaptureError::TimedOut) => (
+                    Tone::Danger,
+                    format!("{shown} took too long and was stopped."),
+                ),
+                Err(exec::CaptureError::NotStarted(error)) => (
+                    Tone::Danger,
+                    format!("Could not start the install: {error}"),
+                ),
             };
             let _ = this.update(cx, |this, cx| {
-                this.installing = false;
-                this.install = None;
+                this.installing = None;
                 this.message = Some(message);
                 this.reload(cx);
+                cx.notify();
             });
         })
         .detach();
@@ -377,10 +414,14 @@ impl ToolsView {
                         .child(tool.name()),
                 )
                 .child(widgets::hint(tool.purpose(), cx).flex_1())
-                .child(if chosen.is_some() {
-                    widgets::tag("ready", Tone::Success)
-                } else {
-                    widgets::tag("not found", Tone::Danger)
+                .child(match (chosen.is_some(), status.absent()) {
+                    (true, _) => widgets::tag("ready", Tone::Success),
+                    // Slipdock works without an optional tool, so one that
+                    // is not there has not failed and is not red.
+                    (false, true) if tool.optional() => widgets::tag("not found", Tone::Info),
+                    (false, true) => widgets::tag("not found", Tone::Danger),
+                    // Something is there and cannot be used.
+                    (false, false) => widgets::tag("not working", Tone::Danger),
                 }),
         );
 
@@ -427,11 +468,30 @@ impl ToolsView {
                     card = card.child(widgets::notice(Tone::Warning, &warning, cx));
                 }
             }
+            // Nothing to show but where to go next: the tag says the rest.
+            None if status.absent() => {
+                let can_install = self.installs.iter().any(|install| {
+                    install.tools.contains(&tool)
+                        && !matches!(install.plan, InstallPlan::Unsupported(_))
+                });
+                let mut text = String::from("Not on PATH or in the usual folders.");
+                if tool.optional() {
+                    text.push_str(" Slipdock works without it.");
+                }
+                text.push_str(if can_install {
+                    " Install it above, or choose the file if it is in another folder."
+                } else {
+                    " Choose the file if it is in another folder."
+                });
+                card = card.child(widgets::hint(text, cx));
+            }
+            // One copy was found and it is broken: its row below says why,
+            // so the reason is not said twice.
+            None if status.configured.is_none() && status.candidates.len() == 1 => {}
+            // The commands of the command line tool are left out: the
+            // buttons of this card do the same.
             None => {
-                card = card.child(widgets::error_text(
-                    status.problem().unwrap_or_default(),
-                    cx,
-                ));
+                card = card.child(widgets::error_text(status.reason().unwrap_or_default(), cx));
             }
         }
 
@@ -481,16 +541,9 @@ impl ToolsView {
             );
         }
 
+        // A missing tool is installed from the top of the page (see
+        // `render_installs`), once for each package, not here.
         let mut buttons = widgets::wrap_row().pt_1();
-        if chosen.is_none() {
-            buttons = buttons.child(
-                Button::new((tool.name(), 102usize))
-                    .small()
-                    .primary()
-                    .label("Install…")
-                    .on_click(cx.listener(move |this, _, _, cx| this.show_install(tool, cx))),
-            );
-        }
         buttons = buttons.child(
             Button::new((tool.name(), 100usize))
                 .small()
@@ -510,43 +563,70 @@ impl ToolsView {
         card.child(buttons).children(self.render_settings(tool, cx))
     }
 
-    fn render_install(&self, tool: Tool, plan: &InstallPlan, cx: &mut Context<Self>) -> Div {
-        let card = widgets::section(format!("Install {tool}"), cx);
-        match plan {
-            InstallPlan::Command { program, args } => card
-                .child(widgets::hint(
-                    "This command installs it. Nothing runs until you press the button.",
-                    cx,
-                ))
-                .child(widgets::mono(&format!("{program} {}", args.join(" ")), cx))
-                .child(
-                    widgets::wrap_row()
-                        .child(
-                            Button::new("run-install")
-                                .primary()
-                                .label("Run this command")
-                                .loading(self.installing)
-                                .disabled(self.installing)
-                                .on_click(cx.listener(|this, _, _, cx| this.run_install(cx))),
-                        )
-                        .child(
-                            Button::new("close-install")
-                                .outline()
-                                .label("Close")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.install = None;
-                                    cx.notify();
-                                })),
-                        ),
-                ),
-            InstallPlan::Steps(steps) => card
-                .child(widgets::hint(
-                    "These steps need administrator rights, so Slipdock does not run them:",
-                    cx,
-                ))
-                .child(widgets::mono(&steps.join("\n"), cx)),
-            InstallPlan::Unsupported(why) => card.child(why.clone()),
+    /// What is missing and how to get it, one group for each package.
+    /// `None` when every tool is there.
+    ///
+    /// It is drawn above the tools: below them it would be off the window,
+    /// and pressing a button would seem to do nothing.
+    fn render_installs(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.installs.is_empty() {
+            return None;
         }
+        let mut card = widgets::section("Install", cx);
+        for (index, install) in self.installs.iter().enumerate() {
+            let mut group = v_flex().gap_2().min_w_0();
+            if index > 0 {
+                group = group.pt_3().border_t_1().border_color(cx.theme().border);
+            }
+            group = group.child(
+                h_flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_x_3()
+                    .gap_y_1()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(install.names()),
+                    )
+                    .when(install.tools.iter().all(|tool| tool.optional()), |this| {
+                        this.child(widgets::tag("optional", Tone::Info))
+                    }),
+            );
+            group = match &install.plan {
+                InstallPlan::Command { program, args } => {
+                    let running = self.installing.as_ref() == Some(&install.plan);
+                    group
+                        .child(widgets::mono(&format!("{program} {}", args.join(" ")), cx))
+                        .child(
+                            widgets::wrap_row()
+                                .items_center()
+                                .child(
+                                    Button::new(("install", index))
+                                        .small()
+                                        .primary()
+                                        .label("Install")
+                                        .loading(running)
+                                        .disabled(self.installing.is_some())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.run_install(index, cx)
+                                        })),
+                                )
+                                .child(widgets::hint("Runs the command above.", cx)),
+                        )
+                }
+                InstallPlan::Steps(steps) => group
+                    .child(widgets::hint(
+                        "Slipdock does not run these steps. Do them in a terminal, then press \
+                         \u{201c}Check again\u{201d}.",
+                        cx,
+                    ))
+                    .child(widgets::mono(&steps.join("\n"), cx)),
+                InstallPlan::Unsupported(why) => group.child(widgets::hint(why.clone(), cx)),
+            };
+            card = card.child(group);
+        }
+        Some(card)
     }
 }
 
@@ -561,8 +641,9 @@ impl Render for ToolsView {
                 .child(
                     widgets::header(
                         "Tools",
-                        "Slipdock runs mydumper and myloader for you. It never downloads them: \
-                         it finds what is installed, or shows how to install it with your package manager.",
+                        "Slipdock runs mydumper and myloader for you. It finds the ones that are \
+                         installed, and installs a missing one with your package manager where \
+                         it can.",
                         cx,
                     )
                     .flex_grow(1.)
@@ -573,27 +654,26 @@ impl Render for ToolsView {
                         .outline()
                         .icon(IconName::RefreshCw)
                         .label("Check again")
+                        .loading(self.checking)
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.statuses = None;
+                            // What the last install or change said is old now.
+                            this.message = None;
                             this.reload(cx);
-                            cx.notify();
                         })),
                 ),
         );
 
+        if let Some((tone, message)) = &self.message {
+            page = page.child(widgets::notice(*tone, message, cx));
+        }
         match &self.statuses {
             None => page = page.child(widgets::loading("Checking the tools…", cx)),
             Some(statuses) => {
+                page = page.children(self.render_installs(cx));
                 for status in statuses {
                     page = page.child(self.render_tool(status, cx));
                 }
             }
-        }
-        if let Some((tool, plan)) = self.install.clone() {
-            page = page.child(self.render_install(tool, &plan, cx));
-        }
-        if let Some(message) = &self.message {
-            page = page.child(widgets::notice(Tone::Info, message, cx));
         }
         page
     }
