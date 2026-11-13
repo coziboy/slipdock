@@ -5,7 +5,7 @@
 #   as a workflow artifact, with no release.
 #
 # The app is sealed with an ad hoc signature and is not notarized. The README
-# section "Install on macOS" tells the user how to open it the first time.
+# section "Install" tells the user how to open it the first time.
 name: release
 
 on:

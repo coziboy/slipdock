@@ -109,7 +109,7 @@ Not decided: voice, personality and any further identity rule.
 
 ## Evidence on Hand
 
-- `README.md`: the full description of behaviour, commands and files.
+- `README.md` and `docs/reference.md`: the full description of behaviour, commands and files.
 - `crates/slipdock-app/macos/icon.svg`: the icon.
 - The app itself, in `crates/slipdock-app/src/`.
 
