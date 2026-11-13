@@ -15,9 +15,35 @@
   </p>
 </div>
 
-Slipdock does not replace mydumper. It runs it for you: it keeps one
-connection file per environment, builds the command, shows progress and
-judges the result.
+Slipdock is a desktop app and a command line tool for copying MySQL and
+MariaDB databases. You take a dump of a database, keep it, and load it into
+another one: to refresh a development database from staging, to keep
+backups, or to move a database to another server.
+
+The work itself is done by mydumper and myloader, which are fast but take
+many options. Slipdock keeps one connection file per environment, builds the
+command for you, shows the progress, and tells you at the end whether the
+dump or load is complete.
+
+<p align="center">
+  <img src="docs/images/dump.png" width="760"
+       alt="The Dump screen: the staging profile is chosen, the database shop is picked from the server's list, and its tables are ticked">
+</p>
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/images/load-guard.png" alt="The load guard: a dialog that asks you to type the name of the target database before a load starts"></td>
+    <td width="33%"><img src="docs/images/dumps.png" alt="The Dumps screen: a list of dumps, each with the colour band of its profile, its tables and its size"></td>
+    <td width="33%"><img src="docs/images/profiles.png" alt="The Profiles screen: three profiles and the connection settings of one"></td>
+  </tr>
+  <tr>
+    <td align="center">The guard before a load</td>
+    <td align="center">Every dump, with its profile's colour</td>
+    <td align="center">One profile per environment</td>
+  </tr>
+</table>
+
+<p align="center"><sub>The screenshots show example data.</sub></p>
 
 ## Features
 
