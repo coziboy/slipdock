@@ -317,7 +317,10 @@ mod tests {
             profile_of("example_db__example__20260102-030405"),
             Some("example")
         );
-        assert_eq!(profile_of("a__b__example__20260102-030405"), Some("example"));
+        assert_eq!(
+            profile_of("a__b__example__20260102-030405"),
+            Some("example")
+        );
         assert_eq!(profile_of("example__20260102-030405"), None);
         assert_eq!(profile_of("example_db__example__today"), None);
         assert_eq!(profile_of("by-hand"), None);

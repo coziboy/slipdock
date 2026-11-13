@@ -676,7 +676,7 @@ impl RenderOnce for CopyButton {
                         cx.background_executor()
                             .timer(std::time::Duration::from_secs(2))
                             .await;
-                        let _ = copied.update(cx, |copied, cx| {
+                        copied.update(cx, |copied, cx| {
                             *copied = false;
                             cx.notify();
                         });
