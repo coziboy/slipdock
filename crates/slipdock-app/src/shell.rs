@@ -26,6 +26,7 @@ use crate::dumps_view::DumpsView;
 use crate::load_view::LoadView;
 use crate::profiles_view::ProfilesView;
 use crate::state::core;
+use crate::theme;
 use crate::tools_view::ToolsView;
 use crate::{ShowDump, ShowDumps, ShowLoad, ShowProfiles, ShowTools};
 
@@ -88,6 +89,7 @@ impl Shell {
         } else {
             Screen::Dump
         };
+        theme::assign_bands(cx);
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         Shell {
@@ -103,6 +105,8 @@ impl Shell {
 
     pub(crate) fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         self.screen = screen;
+        // A profile made on the Profiles screen gets its band here.
+        theme::assign_bands(cx);
         // Profiles or dumps may have changed on another screen: reload what
         // the new screen shows.
         match screen {
@@ -132,7 +136,7 @@ impl Render for Shell {
             .flex_shrink_0()
             .child(
                 div()
-                    .text_lg()
+                    .text_xl()
                     .font_weight(FontWeight::BOLD)
                     .child("Slipdock"),
             )
@@ -140,7 +144,8 @@ impl Render for Shell {
                 this.pb_3().child(
                     div()
                         .text_xs()
-                        .text_color(theme.muted_foreground)
+                        // The grey of the page cannot be read on the rail.
+                        .text_color(theme::color(theme::RAIL_DIM))
                         .child("MySQL dump and load"),
                 )
             });
@@ -152,7 +157,7 @@ impl Render for Shell {
         };
         for (index, screen) in Screen::ALL.into_iter().enumerate() {
             let active = self.screen == screen;
-            let hover = theme.sidebar_accent;
+            let hover = theme::color(theme::RAIL_HOVER);
             items = items.child(
                 h_flex()
                     .id(("nav", index))
@@ -161,7 +166,7 @@ impl Render for Shell {
                     .gap_2()
                     .px_2()
                     .py_1p5()
-                    .rounded_md()
+                    .rounded(theme::RADIUS)
                     .text_sm()
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))
@@ -178,7 +183,7 @@ impl Render for Shell {
                             div()
                                 .text_xs()
                                 .font_weight(FontWeight::NORMAL)
-                                .text_color(theme.muted_foreground)
+                                .text_color(theme::color(theme::RAIL_DIM))
                                 .child(format!("⌘{}", index + 1)),
                         )
                     })
@@ -224,7 +229,7 @@ impl Render for Shell {
             .flex()
             .when(compact, |this| this.flex_col())
             .size_full()
-            .bg(theme.background)
+            .bg(theme::color(theme::GROUND))
             .text_color(theme.foreground)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &ShowDump, _, cx| this.show(Screen::Dump, cx)))

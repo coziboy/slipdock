@@ -23,24 +23,21 @@ use gpui_kit::component::button::*;
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::dumps::{self, DumpInfo};
 use slipdock_core::job;
 use slipdock_core::report::Line;
 
+use crate::theme;
+
 /// The top of a screen: its name and one line about what it is for.
 pub fn header(title: &'static str, about: &'static str, cx: &App) -> Div {
     v_flex()
         .gap_1()
         .min_w_0()
-        .child(
-            div()
-                .text_2xl()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(title),
-        )
+        .child(div().text_3xl().font_weight(FontWeight::BOLD).child(title))
         .child(hint(about, cx))
 }
 
@@ -111,15 +108,121 @@ pub fn wrap_row() -> Div {
     h_flex().flex_wrap().gap_2().min_w_0()
 }
 
-/// One of several choices (a profile, a log level). The chosen one is
-/// filled.
-pub fn choice(id: impl Into<ElementId>, label: impl Into<SharedString>, chosen: bool) -> Button {
-    let button = Button::new(id).label(label).max_w_full().selected(chosen);
-    if chosen {
-        button.primary()
-    } else {
-        button.outline()
+/// A block of a profile's band colour. Without a colour (a dump of a profile
+/// that is gone, a folder named by hand) the block is an outline.
+fn band_block(color: Option<Hsla>, width: f32, height: f32, cx: &App) -> Div {
+    let block = div()
+        .w(px(width))
+        .h(px(height))
+        .flex_shrink_0()
+        .rounded(px(1.));
+    match color {
+        Some(color) => block.bg(color),
+        None => block.border_1().border_color(cx.theme().muted_foreground),
     }
+}
+
+/// The band at the start of a row: one block, as high as two lines of text.
+/// A band that is not `whole` is broken in three: a partial dump. The shape
+/// says it as well as the colour of its tag does.
+pub fn band_mark(color: Option<Hsla>, whole: bool, cx: &App) -> Div {
+    if whole {
+        return band_block(color, 10., 36., cx);
+    }
+    v_flex()
+        .flex_shrink_0()
+        .gap(px(3.))
+        .children((0..3).map(|_| band_block(color, 10., 10., cx)))
+}
+
+/// One of the profiles to choose from, as a label: its band, then its name.
+/// The band of the chosen one is wider and its name is bold.
+pub fn profile_choice(id: impl Into<ElementId>, name: &str, chosen: bool, cx: &App) -> Button {
+    let width = if chosen { 28. } else { 10. };
+    let theme = cx.theme();
+    Button::new(id)
+        .outline()
+        .max_w_full()
+        // Chosen as a row is chosen: an edge in ink.
+        .when(chosen, |this| {
+            this.border_color(theme.primary).bg(theme.background)
+        })
+        // The button holds drawn parts, so it is given its name.
+        .accessibility_label(name.to_string())
+        .child(
+            h_flex()
+                .gap_2()
+                .min_w_0()
+                .child(band_block(theme::band(name, cx), width, 16., cx))
+                .child(
+                    div()
+                        .min_w_0()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_sm()
+                        .when(chosen, |this| this.font_weight(FontWeight::BOLD))
+                        .child(name.to_string()),
+                ),
+        )
+}
+
+/// The label that heads a form: the band of the chosen profile across the
+/// start, its name, and its server at the end of the line. What follows
+/// under it is about this profile. The label is there before a profile is
+/// chosen too, empty, so that choosing one does not move the form.
+pub fn profile_strip(name: Option<&str>, server: Option<&str>, cx: &App) -> Div {
+    let theme = cx.theme();
+    let band = name.and_then(|name| theme::band(name, cx));
+    h_flex()
+        // The band is as high as the text beside it, also when that wraps.
+        .items_stretch()
+        .min_w_0()
+        .overflow_hidden()
+        .rounded(theme::RADIUS)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.background)
+        .child(
+            div()
+                .w(px(44.))
+                .min_h(px(40.))
+                .flex_shrink_0()
+                .map(|this| match band {
+                    Some(color) => this.bg(color),
+                    // No band: the place of one, marked off by a line.
+                    None => this.border_r_1().border_color(theme.border),
+                }),
+        )
+        .child(
+            h_flex()
+                .flex_1()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_x_4()
+                .min_w_0()
+                .px_4()
+                .py_2()
+                .font_family(theme.mono_font_family.clone())
+                .text_sm()
+                .child(match name {
+                    Some(name) => div()
+                        .min_w_0()
+                        .font_weight(FontWeight::BOLD)
+                        .child(name.to_string()),
+                    None => div()
+                        .min_w_0()
+                        .text_color(theme.muted_foreground)
+                        .child("No profile chosen"),
+                })
+                .when_some(server, |this, server| {
+                    this.child(
+                        div()
+                            .min_w_0()
+                            .text_color(theme.muted_foreground)
+                            .child(server.to_string()),
+                    )
+                }),
+        )
 }
 
 /// A bordered box that groups related things.
@@ -129,7 +232,7 @@ pub fn card(cx: &App) -> Div {
         .gap_3()
         .p_4()
         .min_w_0()
-        .rounded_lg()
+        .rounded(theme::RADIUS)
         .border_1()
         .border_color(theme.border)
         .bg(theme.background)
@@ -169,11 +272,14 @@ pub fn option_row(
         .px_3()
         .py_2()
         .min_w_0()
-        .rounded_md()
+        .rounded(theme::RADIUS)
         .border_1()
         .border_color(if chosen { theme.primary } else { theme.border })
-        .when(chosen, |this| this.bg(theme.accent))
-        .when(off, |this| this.opacity(0.55))
+        .bg(if chosen {
+            theme.accent
+        } else {
+            theme.background
+        })
         .when(!off, |this| {
             let hover = theme.accent;
             this.cursor_pointer().hover(move |style| style.bg(hover))
@@ -181,7 +287,8 @@ pub fn option_row(
 }
 
 /// The mark at the start of an `option_row`: filled when chosen.
-pub fn option_mark(chosen: bool, cx: &App) -> Div {
+/// A row that cannot be chosen (`off`) has a faint one.
+pub fn option_mark(chosen: bool, off: bool, cx: &App) -> Div {
     let theme = cx.theme();
     div()
         .size(px(14.))
@@ -190,6 +297,8 @@ pub fn option_mark(chosen: bool, cx: &App) -> Div {
         .border_1()
         .border_color(if chosen {
             theme.primary
+        } else if off {
+            theme.border
         } else {
             theme.muted_foreground
         })
@@ -263,8 +372,9 @@ pub fn database_list(
                 .px_2()
                 .py_1()
                 .min_w_0()
-                .rounded_sm()
+                .rounded(theme::RADIUS)
                 .text_sm()
+                .font_family(theme.mono_font_family.clone())
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover))
                 .child((*name).clone())
@@ -294,7 +404,7 @@ pub fn database_list(
                 // the page behind it.
                 .when(matching.len() > 6, |this| this.occlude())
                 .p_1()
-                .rounded_md()
+                .rounded(theme::RADIUS)
                 .border_1()
                 .border_color(theme.border)
                 .child(rows),
@@ -302,8 +412,8 @@ pub fn database_list(
     )
 }
 
-/// A dump as every list shows it: an icon, when it was taken, and its
-/// folder name. The caller puts its own controls around it (a checkbox and
+/// A dump as every list shows it: the band of its profile, when it was
+/// taken, and its folder name. The caller puts its own controls around it (a checkbox and
 /// buttons on the Dumps screen, the mark of a choice on the Load screen).
 pub fn dump_summary(dump: &DumpInfo, cx: &App) -> Div {
     let theme = cx.theme();
@@ -314,23 +424,13 @@ pub fn dump_summary(dump: &DumpInfo, cx: &App) -> Div {
         Some(taken) => (taken, Some(dump.name.clone())),
         None => (dump.name.clone(), None),
     };
-    let tile_color = if dump.complete {
-        theme.muted_foreground
-    } else {
-        theme.warning
-    };
+    // The band is of the profile in the dump's name, not of the folder the
+    // dump lies in: a dump keeps saying where it came from.
+    let band = dumps::profile_of(&dump.name).and_then(|profile| theme::band(profile, cx));
     h_flex()
         .gap_3()
         .min_w_0()
-        .child(
-            h_flex()
-                .size(px(36.))
-                .flex_shrink_0()
-                .justify_center()
-                .rounded_md()
-                .bg(tile_color.opacity(0.12))
-                .child(Icon::new(gpui_kit::assets::IconName::Database).text_color(tile_color)),
-        )
+        .child(band_mark(band, dump.complete, cx))
         .child(
             v_flex()
                 .flex_1()
@@ -344,7 +444,11 @@ pub fn dump_summary(dump: &DumpInfo, cx: &App) -> Div {
                         }),
                 )
                 .when_some(folder, |this, folder| {
-                    this.child(hint(folder, cx).text_xs())
+                    this.child(
+                        hint(folder, cx)
+                            .text_xs()
+                            .font_family(theme.mono_font_family.clone()),
+                    )
                 }),
         )
 }
@@ -395,7 +499,7 @@ pub fn connection_failed(profile: &str, error: &str, retry: Button, cx: &App) ->
         .child(wrap_row().child(retry.icon(IconName::RefreshCw).label("Try again")))
 }
 
-/// A message in a tinted box, with an icon for its tone.
+/// A message in a box with an edge and an icon in the colour of its tone.
 pub fn notice(tone: Tone, text: &str, cx: &App) -> Div {
     let theme = cx.theme();
     let (color, icon) = match tone {
@@ -413,10 +517,10 @@ pub fn notice(tone: Tone, text: &str, cx: &App) -> Div {
         .gap_2()
         .p_3()
         .min_w_0()
-        .rounded_md()
+        .rounded(theme::RADIUS)
         .border_1()
-        .border_color(color.opacity(0.35))
-        .bg(color.opacity(0.08))
+        .border_color(color)
+        .bg(theme.background)
         .child(
             // As high as a line of the text, so the icon sits beside the
             // first line.
@@ -439,7 +543,7 @@ pub fn mono(text: &str, cx: &App) -> Div {
     let mut block = v_flex()
         .p_3()
         .min_w_0()
-        .rounded_md()
+        .rounded(theme::RADIUS)
         .border_1()
         .border_color(theme.border)
         .bg(theme.muted)

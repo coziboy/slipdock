@@ -22,7 +22,8 @@ use slipdock_core::tools::Tool;
 use slipdock_core::{Error, profile, server};
 
 use crate::run_view::RunView;
-use crate::state::{core, log_options, name_the_profile};
+use crate::state::{core, log_options, name_the_profile, server_of};
+use crate::theme;
 use crate::widgets::{self, Tone};
 
 pub struct LoadView {
@@ -32,6 +33,8 @@ pub struct LoadView {
     /// The profile whose dump folder is listed, when it is not `profile`:
     /// a dump taken from one server can be loaded into another.
     source: Option<String>,
+    /// The server of `profile`, for the label that heads the form.
+    server: Option<String>,
     /// The dumps in the dump folder of `dumps_from`, newest first.
     pub(crate) dumps: Vec<DumpInfo>,
     /// The dump folder is being read.
@@ -85,6 +88,7 @@ impl LoadView {
             profiles: Vec::new(),
             profile: None,
             source: None,
+            server: None,
             databases: Vec::new(),
             listing_databases: false,
             connect_error: None,
@@ -110,6 +114,7 @@ impl LoadView {
             && !self.profiles.contains(name)
         {
             self.profile = None;
+            self.server = None;
             self.databases.clear();
             self.connect_error = None;
             self.dumps.clear();
@@ -140,6 +145,7 @@ impl LoadView {
             self.source = None;
         }
         if self.profile.as_ref() != Some(&name) {
+            self.server = server_of(&name, cx);
             self.profile = Some(name);
             self.list_databases(cx);
         }
@@ -356,25 +362,53 @@ impl LoadView {
                         // dialog would cut off at its edge.
                         .p_1()
                         .child(
-                            v_flex()
+                            // The band of the profile that is loaded into:
+                            // the same one its label had on the form.
+                            h_flex()
+                                .gap_3()
                                 .p_3()
                                 .min_w_0()
-                                .rounded_md()
-                                .bg(cx.theme().muted)
+                                .rounded(theme::RADIUS)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(widgets::band_mark(theme::band(&profile, cx), true, cx))
                                 .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("Profile and server"),
-                                )
-                                .child(
-                                    div()
-                                        .text_lg()
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(format!("{profile}   {server}")),
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("Profile and server"),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family(cx.theme().mono_font_family.clone())
+                                                .font_weight(FontWeight::BOLD)
+                                                .child(format!("{profile}   {server}")),
+                                        ),
                                 ),
                         )
-                        .child(widgets::hint(format!("Dump: {dump}"), cx))
+                        .child(
+                            // The dump with the band of the profile it was
+                            // taken with: a load across profiles shows two
+                            // bands here.
+                            h_flex()
+                                .gap_3()
+                                .min_w_0()
+                                .child(widgets::band_mark(
+                                    dumps::profile_of(&dump)
+                                        .and_then(|profile| theme::band(profile, cx)),
+                                    true,
+                                    cx,
+                                ))
+                                .child(
+                                    widgets::hint(format!("Dump: {dump}"), cx)
+                                        .flex_1()
+                                        .font_family(cx.theme().mono_font_family.clone()),
+                                ),
+                        )
                         .child(widgets::notice(
                             Tone::Danger,
                             "Tables in the dump are dropped and recreated in the target database.",
@@ -391,7 +425,7 @@ impl LoadView {
                                     div()
                                         .px_1p5()
                                         .min_w_0()
-                                        .rounded_sm()
+                                        .rounded(theme::RADIUS)
                                         .border_1()
                                         .border_color(cx.theme().border)
                                         .bg(cx.theme().muted)
@@ -489,11 +523,18 @@ impl LoadView {
             let picked = name.clone();
             let chosen = self.profile.as_ref() == Some(name);
             profiles = profiles.child(
-                widgets::choice(("load-profile", index), name.clone(), chosen).on_click(
+                widgets::profile_choice(("load-profile", index), name, chosen, cx).on_click(
                     cx.listener(move |this, _, _, cx| this.pick_profile(picked.clone(), cx)),
                 ),
             );
         }
+        // The form is about the profile that is loaded into: its label
+        // heads it.
+        page = page.child(widgets::profile_strip(
+            self.profile.as_deref(),
+            self.server.as_deref(),
+            cx,
+        ));
         page = page.child(widgets::section("Destination", cx).child(widgets::field(
             "Load into",
             profiles,
@@ -502,6 +543,7 @@ impl LoadView {
         let Some(into) = self.profile.clone() else {
             return page;
         };
+
         // The rest of the form waits for the server's answer, and is not
         // shown when there is none: a load into a server that cannot be
         // reached would fail anyway.
@@ -529,7 +571,7 @@ impl LoadView {
                 let picked = name.clone();
                 let chosen = self.dumps_from() == Some(name);
                 sources = sources.child(
-                    widgets::choice(("load-source", index), name.clone(), chosen).on_click(
+                    widgets::profile_choice(("load-source", index), name, chosen, cx).on_click(
                         cx.listener(move |this, _, _, cx| this.pick_source(picked.clone(), cx)),
                     ),
                 );
@@ -574,7 +616,7 @@ impl LoadView {
                         .flex_basis(px(300.))
                         .min_w_0()
                         .gap_3()
-                        .child(widgets::option_mark(chosen, cx))
+                        .child(widgets::option_mark(chosen, !dump.complete, cx))
                         .child(widgets::dump_summary(dump, cx).flex_1()),
                 )
                 .child(if dump.complete {
@@ -615,7 +657,11 @@ impl LoadView {
         );
         let database = v_flex()
             .gap_2()
-            .child(Input::new(&self.target).cleanable(true))
+            .child(
+                Input::new(&self.target)
+                    .cleanable(true)
+                    .font_family(cx.theme().mono_font_family.clone()),
+            )
             .children(databases);
         page = page
             .child(
@@ -660,6 +706,12 @@ impl Render for LoadView {
                 .child(widgets::header(
                     "Load",
                     "Put a dump into a database with myloader.",
+                    cx,
+                ))
+                // The run loads into this profile: its label stays in place.
+                .child(widgets::profile_strip(
+                    self.profile.as_deref(),
+                    self.server.as_deref(),
                     cx,
                 ))
                 .child(run)

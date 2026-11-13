@@ -18,6 +18,7 @@ use slipdock_core::profile::{self, PasswordStore, Profile, SECTION};
 use slipdock_core::{Error, Result, secrets, server};
 
 use crate::state::{Core, core};
+use crate::theme;
 use crate::widgets::{self, Tone};
 
 pub struct ProfilesView {
@@ -374,9 +375,10 @@ impl ProfilesView {
                             div()
                                 .p_3()
                                 .min_w_0()
-                                .rounded_md()
+                                .rounded(theme::RADIUS)
                                 .bg(cx.theme().muted)
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .font_weight(FontWeight::BOLD)
                                 .child(name.clone()),
                         )
                         .child(widgets::notice(
@@ -499,15 +501,20 @@ impl ProfilesView {
                     .flex_wrap()
                     .items_start()
                     .gap_3()
+                    .child(widgets::band_mark(
+                        theme::band(&profile.name, cx),
+                        true,
+                        cx,
+                    ))
                     .child(
                         v_flex()
                             .flex_grow(1.)
-                            .flex_basis(px(220.))
+                            .flex_basis(px(200.))
                             .min_w_0()
+                            .font_family(cx.theme().mono_font_family.clone())
                             .child(
                                 div()
-                                    .text_lg()
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .font_weight(FontWeight::BOLD)
                                     .child(profile.name.clone()),
                             )
                             .child(widgets::hint(core(cx).show_path(&profile.path), cx)),
@@ -653,6 +660,7 @@ impl Render for ProfilesView {
             let keychain = profile.password_store() == PasswordStore::Keychain;
             list = list.child(
                 widgets::option_row(("profile", index), profile.name.clone(), chosen, false, cx)
+                    .child(widgets::band_mark(theme::band(&profile.name, cx), true, cx))
                     .child(
                         // Name, then the server on a line of its own, then
                         // the tags: nothing has to share a line, so a long
@@ -668,7 +676,8 @@ impl Render for ProfilesView {
                                     .child(
                                         div()
                                             .min_w_0()
-                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .font_weight(FontWeight::BOLD)
                                             .child(profile.name.clone()),
                                     )
                                     .when(chosen && changed, |this| {

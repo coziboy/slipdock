@@ -10,6 +10,7 @@
 //! | ------------------------- | --------------- |
 //! | application, window       | `main.rs`       |
 //! | global state              | `state.rs`      |
+//! | the theme                 | `theme.rs`      |
 //! | entity, context, render, actions | `shell.rs` |
 //! | elements as values, layout that follows the window | `widgets.rs` |
 //! | background tasks          | `run_view.rs`, `tools_view.rs` |
@@ -25,6 +26,7 @@ mod profiles_view;
 mod run_view;
 mod shell;
 mod state;
+mod theme;
 mod tools_view;
 mod widgets;
 
@@ -84,6 +86,7 @@ fn main() {
     let application = gpui_kit::application().with_assets(AppAssets);
     application.run(move |cx| {
         gpui_kit::init(cx);
+        theme::apply(cx);
         // Scroll bars stay on show, not only while scrolling: a log box
         // should say at a glance that there is more above or below.
         gpui_kit::component::Theme::global_mut(cx).scrollbar_mode =

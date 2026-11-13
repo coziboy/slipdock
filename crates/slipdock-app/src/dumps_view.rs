@@ -22,6 +22,7 @@ use slipdock_core::profile;
 
 use crate::log_view::LogView;
 use crate::state::core;
+use crate::theme;
 use crate::widgets::{self, Tone};
 
 pub struct DumpsView {
@@ -206,7 +207,8 @@ impl DumpsView {
         const SHOWN: usize = 6;
         let view = cx.entity();
         let paths: Vec<PathBuf> = dumps.iter().map(|dump| dump.path.clone()).collect();
-        let names: Vec<String> = dumps.iter().map(|dump| dump.name.clone()).collect();
+        let count = dumps.len();
+        let shown: Vec<DumpInfo> = dumps.iter().take(SHOWN).cloned().collect();
         let size = dumps::human_size(dumps.iter().map(|dump| dump.size).sum());
         let (title, action, details) = match dumps.as_slice() {
             [dump] => (
@@ -225,24 +227,18 @@ impl DumpsView {
             let paths = paths.clone();
             let mut list = v_flex()
                 .p_3()
-                .gap_1()
+                .gap_2()
                 .min_w_0()
-                .rounded_md()
-                .bg(cx.theme().muted);
-            for name in names.iter().take(SHOWN) {
-                list = list.child(
-                    div()
-                        .min_w_0()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(name.clone()),
-                );
+                .rounded(theme::RADIUS)
+                .border_1()
+                .border_color(cx.theme().border);
+            // Each as the list shows it: the band of its profile, broken
+            // for a partial dump, the date and the folder name.
+            for dump in &shown {
+                list = list.child(widgets::dump_summary(dump, cx));
             }
-            if names.len() > SHOWN {
-                list = list.child(widgets::hint(
-                    format!("and {} more", names.len() - SHOWN),
-                    cx,
-                ));
+            if count > SHOWN {
+                list = list.child(widgets::hint(format!("and {} more", count - SHOWN), cx));
             }
             dialog
                 .title(title.clone())
@@ -483,7 +479,7 @@ impl Render for DumpsView {
                     .gap_y_1()
                     .px_4()
                     .py_3()
-                    .bg(muted.opacity(0.5))
+                    .bg(muted)
                     .child(
                         h_flex()
                             .flex_grow(1.)
@@ -537,7 +533,7 @@ impl Render for DumpsView {
                                     .flex_1()
                                     .min_w_0()
                                     .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
+                                    .font_family(theme.mono_font_family.clone())
                                     .child(ctx.show_path(root)),
                             ),
                     )

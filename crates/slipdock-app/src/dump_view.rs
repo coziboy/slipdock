@@ -18,7 +18,8 @@ use slipdock_core::tools::Tool;
 use slipdock_core::{Error, platform, profile};
 
 use crate::run_view::RunView;
-use crate::state::{Core, core, log_options, name_the_profile};
+use crate::state::{Core, core, log_options, name_the_profile, server_of};
+use crate::theme;
 use crate::widgets::{self, Tone};
 
 /// The rows the table list shows at its full height (220 px) before it
@@ -28,6 +29,8 @@ const ROWS_WITHOUT_SCROLL: usize = 7;
 pub struct DumpView {
     profiles: Vec<String>,
     profile: Option<String>,
+    /// The server of the chosen profile, for the label that heads the form.
+    server: Option<String>,
     pub(crate) database: Entity<InputState>,
     /// Names to leave out, typed by hand. Used only when the server could
     /// not list the tables.
@@ -87,6 +90,7 @@ impl DumpView {
         let mut view = DumpView {
             profiles: Vec::new(),
             profile: None,
+            server: None,
             database,
             exclude: cx.new(|cx| InputState::new(window, cx).placeholder("table1, table2")),
             filter,
@@ -115,6 +119,7 @@ impl DumpView {
             && !self.profiles.contains(name)
         {
             self.profile = None;
+            self.server = None;
         }
         cx.notify();
     }
@@ -136,6 +141,7 @@ impl DumpView {
             .unwrap_or_default();
         self.out
             .update(cx, |input, cx| input.set_value(dump_dir, window, cx));
+        self.server = server_of(&name, cx);
         self.profile = Some(name);
         self.databases.clear();
         self.tables.clear();
@@ -434,7 +440,7 @@ impl DumpView {
             let picked = name.clone();
             let chosen = self.profile.as_ref() == Some(name);
             profiles = profiles.child(
-                widgets::choice(("dump-profile", index), name.clone(), chosen).on_click(
+                widgets::profile_choice(("dump-profile", index), name, chosen, cx).on_click(
                     cx.listener(move |this, _, window, cx| {
                         this.pick_profile(picked.clone(), window, cx)
                     }),
@@ -443,6 +449,12 @@ impl DumpView {
         }
         let mut source =
             widgets::section("Source", cx).child(widgets::field("Profile", profiles, cx));
+        // The form is about one profile: its label heads it.
+        page = page.child(widgets::profile_strip(
+            self.profile.as_deref(),
+            self.server.as_deref(),
+            cx,
+        ));
         let Some(profile) = self.profile.clone() else {
             return page.child(source);
         };
@@ -481,7 +493,11 @@ impl DumpView {
             "Database",
             v_flex()
                 .gap_2()
-                .child(Input::new(&self.database).cleanable(true))
+                .child(
+                    Input::new(&self.database)
+                        .cleanable(true)
+                        .font_family(cx.theme().mono_font_family.clone()),
+                )
                 .children(databases)
                 .when_some(self.list_note.clone(), |this, note| {
                     this.child(widgets::hint(note, cx))
@@ -545,7 +561,10 @@ impl DumpView {
         } else {
             let shown = self.shown(cx);
             let selected = self.tables.iter().filter(|(_, selected)| *selected).count();
-            let mut checklist = v_flex().gap_1p5();
+            // Table names are set like the other names of the server.
+            let mut checklist = v_flex()
+                .gap_1p5()
+                .font_family(cx.theme().mono_font_family.clone());
             for &index in &shown {
                 let (table, selected) = &self.tables[index];
                 let label = if table.is_view {
@@ -625,7 +644,7 @@ impl DumpView {
                             // page keeps the scroll.
                             .when(shown.len() > ROWS_WITHOUT_SCROLL, |this| this.occlude())
                             .p_2()
-                            .rounded_md()
+                            .rounded(theme::RADIUS)
                             .border_1()
                             .border_color(cx.theme().border)
                             .child(checklist),
@@ -651,7 +670,9 @@ impl DumpView {
                     "Folder",
                     h_flex()
                         .gap_2()
-                        .child(div().flex_1().min_w_0().child(Input::new(&self.out)))
+                        .child(div().flex_1().min_w_0().child(
+                            Input::new(&self.out).font_family(cx.theme().mono_font_family.clone()),
+                        ))
                         .child(
                             Button::new("choose-dump-out")
                                 .outline()
@@ -705,6 +726,12 @@ impl Render for DumpView {
                 .child(widgets::header(
                     "Dump",
                     "Copy a database from a server into a folder with mydumper.",
+                    cx,
+                ))
+                // The run is of this profile: its label stays in place.
+                .child(widgets::profile_strip(
+                    self.profile.as_deref(),
+                    self.server.as_deref(),
                     cx,
                 ))
                 .child(run)

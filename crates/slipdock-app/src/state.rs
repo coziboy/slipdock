@@ -52,6 +52,16 @@ pub fn name_the_profile(ctx: &mut job::Context, tool: Tool, extra_args: &mut Vec
     extra_args.extend(settings::split_arguments(&arguments).unwrap_or_default());
 }
 
+/// The server of a profile as its label shows it (`user@host:port`), read
+/// from the profile's file. Asked for when a profile is chosen, not at every
+/// draw. `None` when the file cannot be read; the form then says why.
+pub fn server_of(profile: &str, cx: &App) -> Option<String> {
+    core(cx)
+        .profile(profile)
+        .ok()
+        .map(|profile| profile.target())
+}
+
 pub struct Core(pub job::Context);
 
 impl Global for Core {}

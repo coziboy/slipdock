@@ -252,13 +252,16 @@ impl Render for RunView {
                             ),
                         )
                         .when(open, |this| {
-                            this.child(widgets::hint(
-                                format!(
-                                    "Log: {}",
-                                    widgets::tilde_path(&self.log, core(cx).home.as_deref())
-                                ),
-                                cx,
-                            ))
+                            this.child(
+                                widgets::hint(
+                                    format!(
+                                        "Log: {}",
+                                        widgets::tilde_path(&self.log, core(cx).home.as_deref())
+                                    ),
+                                    cx,
+                                )
+                                .font_family(cx.theme().mono_font_family.clone()),
+                            )
                             .child(self.log_view.clone())
                         }),
                 )
@@ -279,9 +282,10 @@ impl Render for RunView {
                     .cloned()
                     .collect();
                 this.child(
+                    // The verdict is said by the edge of the card and by the
+                    // mark on its first line, not by a tint.
                     widgets::card(cx)
-                        .border_color(color.opacity(0.5))
-                        .bg(color.opacity(0.06))
+                        .border_color(color)
                         .child(widgets::lines(&lines, cx))
                         .when_some(self.tool_output.clone(), |card, output| {
                             card.child(

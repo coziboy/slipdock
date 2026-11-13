@@ -102,6 +102,7 @@ case "$5" in "SHOW DATABASES") echo example_db ;; esac
 fn open(cx: &mut TestAppContext, context: Context) -> (Entity<Shell>, VisualTestContext) {
     let (window, shell) = cx.update(|cx| {
         gpui_kit::init(cx);
+        crate::theme::apply(cx);
         cx.set_global(Core(context));
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
             cx.new(|cx| Shell::new(window, cx))
@@ -1110,6 +1111,31 @@ fn a_failed_connection_takes_the_place_of_the_form(cx: &mut TestAppContext) {
     assert!(dump.read_with(&cx, |view, _| view.connect_error.is_none()));
     cx.run_until_parked();
     assert!(dump.read_with(&cx, |view, _| view.connect_error.is_some()));
+}
+
+/// Every profile has a band once the window is open, a dump shows the band
+/// of the profile in its name, and the band is in the settings file.
+#[gpui_kit::test]
+fn a_profile_has_a_band(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (_shell, mut cx) = open(cx, sandbox(&root));
+    cx.update(|_, cx| {
+        let band = crate::theme::band("example", cx);
+        assert_eq!(band, Some(crate::theme::color(crate::theme::BANDS[0])));
+        assert_eq!(crate::theme::band("gone", cx), None);
+        // The components draw from Slipdock's theme, not the library's.
+        use crate::theme::{INK, PANEL, RAIL, color};
+        use gpui_kit::component::ActiveTheme as _;
+        let theme = cx.theme();
+        assert_eq!(theme.background, color(PANEL));
+        assert_eq!(theme.primary, color(INK));
+        assert_eq!(theme.button_primary, color(INK));
+        assert_eq!(theme.sidebar, color(RAIL));
+        assert_eq!(theme.radius, crate::theme::RADIUS);
+        assert!(!theme.shadow);
+    });
+    let saved = fs::read_to_string(root.join("config/settings.toml")).unwrap();
+    assert!(saved.contains("example = 0"), "{saved}");
 }
 
 /// The database list follows the typed name, without regard to case or to
