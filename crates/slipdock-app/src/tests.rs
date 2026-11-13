@@ -1113,6 +1113,19 @@ fn a_failed_connection_takes_the_place_of_the_form(cx: &mut TestAppContext) {
     assert!(dump.read_with(&cx, |view, _| view.connect_error.is_some()));
 }
 
+/// The size of a dump is put on a fixed scale of five steps.
+#[test]
+fn the_size_of_a_dump_has_five_steps() {
+    use crate::widgets::size_step;
+    const MB: u64 = 1024 * 1024;
+    assert_eq!(size_step(0), 1);
+    assert_eq!(size_step(10 * MB - 1), 1);
+    assert_eq!(size_step(10 * MB), 2);
+    assert_eq!(size_step(500 * MB), 3);
+    assert_eq!(size_step(5 * 1024 * MB), 4);
+    assert_eq!(size_step(u64::MAX), 5);
+}
+
 /// Every profile has a band once the window is open, a dump shows the band
 /// of the profile in its name, and the band is in the settings file.
 #[gpui_kit::test]

@@ -225,6 +225,38 @@ pub fn profile_strip(name: Option<&str>, server: Option<&str>, cx: &App) -> Div 
         )
 }
 
+/// How large a dump is, on a fixed scale of five steps: under 10 MB, under
+/// 100 MB, under 1 GB, under 10 GB, and more.
+pub fn size_step(bytes: u64) -> usize {
+    const MB: u64 = 1024 * 1024;
+    [10 * MB, 100 * MB, 1024 * MB, 10 * 1024 * MB]
+        .iter()
+        .filter(|limit| bytes >= **limit)
+        .count()
+        + 1
+}
+
+/// The size of a dump as five bars of rising height, filled up to its step,
+/// so that a large dump is seen before its number is read.
+fn size_bars(bytes: u64, cx: &App) -> Div {
+    let theme = cx.theme();
+    let step = size_step(bytes);
+    h_flex()
+        .items_end()
+        .flex_shrink_0()
+        .gap(px(2.))
+        .children((1..=5).map(|bar| {
+            div()
+                .w(px(3.))
+                .h(px(2. + 2. * bar as f32))
+                .bg(if bar <= step {
+                    theme.muted_foreground
+                } else {
+                    theme.border
+                })
+        }))
+}
+
 /// A bordered box that groups related things.
 pub fn card(cx: &App) -> Div {
     let theme = cx.theme();
@@ -453,13 +485,17 @@ pub fn dump_summary(dump: &DumpInfo, cx: &App) -> Div {
         )
 }
 
-/// What a dump holds: `65 tables · 15M`.
+/// What a dump holds: `65 tables · 15M`, then its size as bars.
 pub fn dump_stats(dump: &DumpInfo, cx: &App) -> Div {
-    hint(
-        format!("{} tables · {}", dump.tables, dumps::human_size(dump.size)),
-        cx,
-    )
-    .flex_shrink_0()
+    h_flex()
+        .items_center()
+        .gap_2()
+        .flex_shrink_0()
+        .child(hint(
+            format!("{} tables · {}", dump.tables, dumps::human_size(dump.size)),
+            cx,
+        ))
+        .child(size_bars(dump.size, cx))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
