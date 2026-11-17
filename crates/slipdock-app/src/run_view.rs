@@ -157,10 +157,11 @@ impl RunView {
                 self.add_to_log(lines, cx);
                 self.log_view.update(cx, |view, cx| view.set_finished(cx));
                 // The same report the command line tool prints.
-                self.report = self
-                    .prepared
-                    .take()
-                    .map(|prepared| prepared.report(&outcome));
+                if let Some(prepared) = self.prepared.take() {
+                    let report = prepared.report(&outcome);
+                    crate::state::notify(&prepared.notice(&report), cx);
+                    self.report = Some(report);
+                }
                 self.cancel = None;
             }
         }

@@ -360,6 +360,7 @@ impl DumpPlan {
         Ok(Prepared {
             invocation,
             label: format!("Dumping {}", options.database),
+            database: options.database.clone(),
             log,
             kind: Kind::Dump { out: self.out },
             level: options
@@ -512,6 +513,7 @@ impl LoadPlan {
         Ok(Prepared {
             invocation,
             label: format!("Loading into {}", self.target),
+            database: self.target.clone(),
             log,
             level: options
                 .log_level
@@ -540,6 +542,8 @@ pub struct Prepared {
     pub invocation: Invocation,
     /// What is happening, for a progress line: `Dumping example_db`.
     pub label: String,
+    /// The database the run is about, named in its notification.
+    database: String,
     pub log: PathBuf,
     kind: Kind,
     /// The log level in effect (run option, else profile, else 2).
@@ -564,6 +568,11 @@ impl Prepared {
 
     fn show(&self, path: &Path) -> String {
         command::display_path(path, self.home.as_deref())
+    }
+
+    /// The desktop notification for a finished run and its report.
+    pub fn notice(&self, report: &Report) -> report::Notice {
+        report::notice(&self.database, report)
     }
 
     /// Judges a finished run.

@@ -6,7 +6,10 @@
 //! core's `Context` there: config folder, settings, where to look for tools,
 //! and the keychain.
 
-use gpui_kit::{App, Global};
+use std::rc::Rc;
+
+use gpui_kit::{App, Global, SystemNotification};
+use slipdock_core::report::Notice;
 use slipdock_core::tools::Tool;
 use slipdock_core::{job, settings};
 
@@ -70,4 +73,38 @@ impl Global for Core {}
 /// background thread, which a reference into the app cannot.
 pub fn core(cx: &App) -> job::Context {
     cx.global::<Core>().0.clone()
+}
+
+/// Shows a desktop notification when a run ends. `main` sets the real one
+/// ([`Notifier::system`]); tests set none, or one that records the notices.
+#[derive(Clone)]
+pub struct Notifier(pub Rc<ShowNotice>);
+
+pub type ShowNotice = dyn Fn(&Notice, &App);
+
+impl Global for Notifier {}
+
+impl Notifier {
+    /// The system's own notifications, under the app's name and icon.
+    ///
+    /// macOS shows them only for the app started from its bundle
+    /// (`Slipdock.app`); a build run from `target/` shows none. The first
+    /// one asks the user for permission.
+    pub fn system() -> Notifier {
+        Notifier(Rc::new(|notice, cx| {
+            cx.show_system_notification(SystemNotification {
+                // One tag: a new notice replaces the last one.
+                tag: "run".into(),
+                title: notice.title.clone().into(),
+                body: notice.body.clone().into(),
+                actions: Vec::new(),
+            })
+        }))
+    }
+}
+
+pub fn notify(notice: &Notice, cx: &App) {
+    if let Some(notifier) = cx.try_global::<Notifier>() {
+        (notifier.0.clone())(notice, cx);
+    }
 }

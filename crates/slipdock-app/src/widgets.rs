@@ -123,10 +123,7 @@ fn band_block(color: Option<Hsla>, width: f32, height: f32, cx: &App) -> Div {
     match color {
         // The user can choose a colour as light as the card it is on; the
         // line keeps such a block in sight.
-        Some(color) if pale(color) => block
-            .bg(color)
-            .border_1()
-            .border_color(cx.theme().border),
+        Some(color) if pale(color) => block.bg(color).border_1().border_color(cx.theme().border),
         Some(color) => block.bg(color),
         None => block.border_1().border_color(cx.theme().muted_foreground),
     }

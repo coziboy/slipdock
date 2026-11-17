@@ -238,6 +238,13 @@ fn unselected_tables_are_left_out(cx: &mut TestAppContext) {
 fn dry_run_load_then_a_confirmed_load(cx: &mut TestAppContext) {
     let (_temp, root) = temp_root();
     let (shell, mut cx) = open(cx, sandbox(&root));
+    let notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = notices.clone();
+    cx.update(|_, cx| {
+        cx.set_global(crate::state::Notifier(std::rc::Rc::new(
+            move |notice, _| recorded.lock().unwrap().push(notice.clone()),
+        )))
+    });
     let load: Entity<LoadView> = shell.read_with(&cx, |shell, _| shell.load.clone());
     cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Load, cx)));
 
@@ -327,6 +334,12 @@ fn dry_run_load_then_a_confirmed_load(cx: &mut TestAppContext) {
     assert!(report.success, "{}", report.plain());
     assert!(report.plain().contains("Load complete"));
     assert!(root.join("loaded").exists());
+
+    // The end of the run is also told in a desktop notification, once.
+    let notices = notices.lock().unwrap();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].title, "Load complete");
+    assert!(notices[0].body.starts_with("example_db · "), "{notices:?}");
 }
 
 #[gpui_kit::test]
@@ -1143,9 +1156,7 @@ fn a_chosen_colour_is_the_band_of_the_profile(cx: &mut TestAppContext) {
     cx.update(|window, cx| field.update(cx, |field, cx| field.pick_at(1., 0., window, cx)));
     cx.run_until_parked();
     assert_eq!(typed(&mut cx), "#8F0000");
-    cx.update(|window, cx| {
-        field.update(cx, |field, cx| field.pick_brightness(1., window, cx))
-    });
+    cx.update(|window, cx| field.update(cx, |field, cx| field.pick_brightness(1., window, cx)));
     cx.run_until_parked();
     assert_eq!(shown(&mut cx), Some(0xFF0000));
     assert_eq!(typed(&mut cx), "#FF0000");
@@ -1153,9 +1164,7 @@ fn a_chosen_colour_is_the_band_of_the_profile(cx: &mut TestAppContext) {
     assert!(saved().contains("example = \"#FF0000\""), "{}", saved());
 
     // Half as light, with the mark where it was: a darker red.
-    cx.update(|window, cx| {
-        field.update(cx, |field, cx| field.pick_brightness(0.5, window, cx))
-    });
+    cx.update(|window, cx| field.update(cx, |field, cx| field.pick_brightness(0.5, window, cx)));
     cx.run_until_parked();
     assert_eq!(typed(&mut cx), "#800000");
     assert!(saved().contains("example = \"#800000\""), "{}", saved());
@@ -1194,11 +1203,13 @@ fn a_chosen_colour_is_the_band_of_the_profile(cx: &mut TestAppContext) {
     // on the profile it had, and the screen draws with the wheel open.
     cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Dumps, cx)));
     cx.update(|_, cx| shell.update(cx, |shell, cx| shell.show(Screen::Profiles, cx)));
-    cx.update(|_, cx| field.update(cx, |field, cx| {
-        field.open = true;
-        field.wheel = true;
-        cx.notify();
-    }));
+    cx.update(|_, cx| {
+        field.update(cx, |field, cx| {
+            field.open = true;
+            field.wheel = true;
+            cx.notify();
+        })
+    });
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -1257,7 +1268,10 @@ fn the_wheel_follows_the_pointer(cx: &mut TestAppContext) {
         panic!("no colour")
     };
     assert_eq!(red >> 16, 0x8F, "{red:06X}");
-    assert!(red & 0xFFFF < 0x2020 && red & 0xFF == (red >> 8) & 0xFF, "{red:06X}");
+    assert!(
+        red & 0xFFFF < 0x2020 && red & 0xFF == (red >> 8) & 0xFF,
+        "{red:06X}"
+    );
 
     // Dragged far out to the left, past the rim: the colour across from
     // red, as strong as it gets.
@@ -1285,7 +1299,9 @@ fn the_wheel_follows_the_pointer(cx: &mut TestAppContext) {
 
     // The colours are still there beside the wheel. A click on one takes
     // it, and the wheel stays.
-    let swatch = cx.debug_bounds("band-colour-0").expect("the colours are shown");
+    let swatch = cx
+        .debug_bounds("band-colour-0")
+        .expect("the colours are shown");
     cx.simulate_click(swatch.center(), Modifiers::default());
     draw(&mut cx);
     let first = crate::band_picker::palette()[0][0];

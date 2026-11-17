@@ -38,7 +38,7 @@ use gpui_kit::*;
 use slipdock_core::{job, platform};
 
 use shell::Shell;
-use state::Core;
+use state::{Core, Notifier};
 
 // Actions are plain types. This macro declares one per name; keys are bound
 // to them below, and views handle them with `.on_action(...)`.
@@ -93,6 +93,9 @@ fn main() {
         gpui_kit::component::Theme::global_mut(cx).scrollbar_mode =
             gpui_kit::component::scroll::ScrollbarMode::Always;
         cx.set_global(Core(context));
+        cx.set_global(Notifier::system());
+        // Clicking a notification brings the window to the front.
+        cx.on_system_notification_response(|_, cx| cx.activate(true));
 
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([

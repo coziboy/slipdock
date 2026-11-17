@@ -95,6 +95,33 @@ pub fn plain(lines: &[Line]) -> String {
     lines.iter().map(Line::plain).collect::<Vec<_>>().join("\n")
 }
 
+/// What a desktop notification says when a run has ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub title: String,
+    pub body: String,
+}
+
+/// The notice for a finished run: the report's verdict (its first ✓ or ✗
+/// line) as the title, the database and the verdict's note as the body.
+/// `Dump complete` / `example_db · 1:54 · 65 tables · 15M`.
+pub fn notice(database: &str, report: &Report) -> Notice {
+    let verdict = report.lines.iter().find_map(|line| match line {
+        Line::Ok { text, note } => Some((text.clone(), note.clone())),
+        Line::Fail(text) => Some((text.clone(), None)),
+        _ => None,
+    });
+    let (title, note) = verdict.unwrap_or_else(|| {
+        let text = if report.success { "Finished" } else { "Failed" };
+        (text.to_string(), None)
+    });
+    let body = match note {
+        Some(note) => format!("{database} · {note}"),
+        None => database.to_string(),
+    };
+    Notice { title, body }
+}
+
 /// `83 s` -> `1:23`.
 pub fn duration(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
@@ -135,6 +162,44 @@ mod tests {
             "slipdock dump\n  Profile   example  user@host:3306\n  Database  example_db\n            second line\n\
              ✓ Dump complete  0:05\n✗ Load failed\n! Interrupted.\n    detail\n  │ CRITICAL: no zstd\n"
         );
+    }
+
+    #[test]
+    fn notice_takes_the_verdict() {
+        let report = Report {
+            lines: vec![
+                Line::Quote("tool output".into()),
+                Line::Ok {
+                    text: "Dump complete".into(),
+                    note: Some("1:54 · 65 tables · 15M".into()),
+                },
+                Line::row("Folder", "~/dumps/x"),
+            ],
+            success: true,
+        };
+        assert_eq!(
+            notice("example_db", &report),
+            Notice {
+                title: "Dump complete".into(),
+                body: "example_db · 1:54 · 65 tables · 15M".into(),
+            }
+        );
+        let failed = Report {
+            lines: vec![Line::Fail("Load failed (exit 1) after 0:02".into())],
+            success: false,
+        };
+        assert_eq!(
+            notice("example_db", &failed),
+            Notice {
+                title: "Load failed (exit 1) after 0:02".into(),
+                body: "example_db".into(),
+            }
+        );
+        let empty = Report {
+            lines: vec![],
+            success: false,
+        };
+        assert_eq!(notice("example_db", &empty).title, "Failed");
     }
 
     #[test]
