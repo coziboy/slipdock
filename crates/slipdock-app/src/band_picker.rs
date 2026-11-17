@@ -324,10 +324,7 @@ fn paint_wheel(
                 continue;
             }
             let (hue, saturation) = wheel_place(x / radius, y / radius).unwrap_or((0., 0.));
-            let origin = point(
-                middle.x + px(x - CELL / 2.),
-                middle.y + px(y - CELL / 2.),
-            );
+            let origin = point(middle.x + px(x - CELL / 2.), middle.y + px(y - CELL / 2.));
             window.paint_quad(fill(
                 Bounds::new(origin, cell),
                 theme::color(hsv_to_rgb(hue, saturation, brightness)),
@@ -402,9 +399,7 @@ impl Render for BandPicker {
                     ),
             );
         let brightness = self.brightness;
-        let mark = self
-            .rgb
-            .map(|rgb| (self.hue, self.saturation, rgb));
+        let mark = self.rgb.map(|rgb| (self.hue, self.saturation, rgb));
         let wheel = canvas(
             |_, _, _| (),
             move |bounds, _, window, _| {
@@ -465,35 +460,37 @@ impl Render for BandPicker {
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, window, cx| this.pick(rgb, window, cx)))
         };
-        let colours = v_flex()
-            .gap_3()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(widgets::hint("Slipdock", cx))
-                    .child(h_flex().gap(px(3.)).children(
-                        theme::BANDS.iter().enumerate().map(|(index, band)| {
-                            pick(("slipdock-band", index).into(), *band, cx)
-                        }),
-                    )),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(widgets::hint("More colours", cx))
-                    .child(v_flex().gap(px(3.)).children(
-                        palette().into_iter().enumerate().map(|(row, colours)| {
-                            h_flex().gap(px(3.)).children(
-                                colours.into_iter().enumerate().map(|(column, rgb)| {
-                                    let place = row * 16 + column;
-                                    pick(("palette", place).into(), rgb, cx)
-                                        // Named, so that a test can find it.
-                                        .debug_selector(|| format!("band-colour-{place}"))
-                                }),
-                            )
-                        }),
-                    )),
-            );
+        let colours =
+            v_flex()
+                .gap_3()
+                .child(
+                    v_flex().gap_1().child(widgets::hint("Slipdock", cx)).child(
+                        h_flex().gap(px(3.)).children(
+                            theme::BANDS.iter().enumerate().map(|(index, band)| {
+                                pick(("slipdock-band", index).into(), *band, cx)
+                            }),
+                        ),
+                    ),
+                )
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(widgets::hint("More colours", cx))
+                        .child(v_flex().gap(px(3.)).children(
+                            palette().into_iter().enumerate().map(|(row, colours)| {
+                                h_flex()
+                                    .gap(px(3.))
+                                    .children(colours.into_iter().enumerate().map(
+                                        |(column, rgb)| {
+                                            let place = row * 16 + column;
+                                            pick(("palette", place).into(), rgb, cx)
+                                                // Named, so that a test can find it.
+                                                .debug_selector(|| format!("band-colour-{place}"))
+                                        },
+                                    ))
+                            }),
+                        )),
+                );
         let on_wheel = v_flex()
             .gap_3()
             // Named, so that a test can find where it is.
@@ -571,7 +568,7 @@ mod tests {
         // Every channel value in a few mixes, and the corners of the cube.
         for step in 0..=255u32 {
             for rgb in [
-                step << 16 | (255 - step) << 8 | step / 2,
+                (step << 16) | ((255 - step) << 8) | (step / 2),
                 step << 8 | (step * 7 % 256),
                 step * 0x010101,
                 (step * 37 % 256) << 16 | (step * 101 % 256) << 8 | (step * 13 % 256),
