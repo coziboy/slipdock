@@ -36,6 +36,13 @@ const HEAD_WIDTH: usize = 200;
 /// The most lines of the tool's output that are kept whole, for a front
 /// end with room to show them. The log file has all of them.
 const OUTPUT_LINES: usize = 200;
+/// How long a cancelled tool gets to stop on its own after SIGTERM. mydumper
+/// can log "Shutting down gracefully" and then hang with its threads
+/// blocked, so after this it is killed.
+#[cfg(not(test))]
+const STOP_GRACE: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const STOP_GRACE: Duration = Duration::from_millis(600);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Progress {
@@ -137,7 +144,7 @@ pub fn start(invocation: &Invocation, watch: Option<&Path>, log: &Path) -> Resul
 
     thread::spawn(move || {
         let started = Instant::now();
-        let mut signalled = false;
+        let mut signalled: Option<Instant> = None;
         let mut written = None;
         let mut tick = 0;
         let status = loop {
@@ -146,11 +153,20 @@ pub fn start(invocation: &Invocation, watch: Option<&Path>, log: &Path) -> Resul
                 Ok(None) => {}
                 Err(_) => break None,
             }
-            if watcher_cancel.is_cancelled() && !signalled {
-                // Ask once, then keep waiting: the tool finishes its current
-                // step and exits on its own.
-                let _ = platform::terminate(child.id());
-                signalled = true;
+            if watcher_cancel.is_cancelled() {
+                match signalled {
+                    // Ask once; the tool usually finishes its current step
+                    // and exits on its own.
+                    None => {
+                        let _ = platform::terminate(child.id());
+                        signalled = Some(Instant::now());
+                    }
+                    // It did not stop in time: kill it.
+                    Some(at) if at.elapsed() >= STOP_GRACE => {
+                        let _ = child.kill();
+                    }
+                    Some(_) => {}
+                }
             }
             if let Some(dir) = watch.as_deref()
                 && tick % MEASURE_EVERY == 0
@@ -505,6 +521,23 @@ mod tests {
         assert!(outcome.interrupted);
         assert_eq!(outcome.exit_code(), 130);
         assert!(outcome.elapsed < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_tool_that_ignores_sigterm_is_killed_after_the_grace_period() {
+        let temp = tempfile::tempdir().unwrap();
+        let running = start(
+            &sh("trap '' TERM; while true; do sleep 0.1; done"),
+            None,
+            &temp.path().join("run.log"),
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(300));
+        running.cancel.cancel();
+        let (outcome, _) = wait(&running);
+        assert!(outcome.interrupted);
+        assert_eq!(outcome.exit_code(), 130);
+        assert!(outcome.elapsed < Duration::from_secs(5));
     }
 
     #[test]
