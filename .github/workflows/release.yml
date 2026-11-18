@@ -10,15 +10,22 @@
 # Caching: cargo-bundle and the compiled dependencies are kept between runs.
 # GitHub lets a run read the caches of its own ref and of the default branch
 # only, so a cache saved by one tag is of no use to the next tag. The caches
-# are therefore saved by runs on main, and a tag run only reads them. To fill
-# or refresh them, run the workflow by hand on main (before a release, or
-# after the dependencies changed). A run without a cache still works; it
+# are therefore saved by runs on main, and a tag run only reads them. A push
+# to main that changes Cargo.lock, rust-toolchain.toml or this file refills
+# them; a run by hand on main does the same. A run without a cache still works; it
 # just takes about 15 minutes.
 name: release
 
 on:
   push:
     tags: ["v*"]
+    # Refills the caches on main when the dependencies or the compiler
+    # change. These runs build the zip but create no release.
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/release.yml
   workflow_dispatch:
 
 permissions:
