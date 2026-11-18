@@ -20,6 +20,7 @@ use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use slipdock_core::{platform, profile};
+use std::time::Duration;
 
 use crate::dump_view::DumpView;
 use crate::dumps_view::DumpsView;
@@ -80,6 +81,9 @@ pub struct Shell {
     focus: FocusHandle,
     /// The window is drawn up to its top edge (macOS): see `TITLE_STRIP`.
     pub(crate) under_title_bar: bool,
+    /// ⌘ has been pressed at least once. Until then the shortcut labels stay
+    /// hidden without a fade-out, so they do not flash when the window opens.
+    command_seen: bool,
 }
 
 impl Shell {
@@ -103,6 +107,7 @@ impl Shell {
             tools: cx.new(|cx| ToolsView::new(window, cx)),
             focus,
             under_title_bar: platform::draws_under_title_bar(platform::current_os()),
+            command_seen: false,
         }
     }
 
@@ -159,6 +164,9 @@ impl Render for Shell {
         // by wrapping (see `widgets.rs`); only this frame switches layout.
         let compact = window.viewport_size().width < COMPACT_BELOW;
         let strip = title_strip(self.under_title_bar, window.is_fullscreen());
+        // The shortcuts show only while ⌘ is held, as in other Mac apps.
+        let command_held = window.modifiers().platform;
+        let command_seen = self.command_seen || command_held;
 
         let brand = v_flex()
             .px_2()
@@ -207,13 +215,31 @@ impl Render for Shell {
                     .child(Icon::new(screen.icon()).small())
                     .child(div().flex_1().child(screen.label()))
                     .when(!compact, |this| {
-                        // The key that `main.rs` binds to this screen.
+                        // The key that `main.rs` binds to this screen. It stays
+                        // in the layout and fades in and out with ⌘.
+                        let label = div()
+                            .text_xs()
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(theme::color(theme::RAIL_DIM))
+                            .child(format!("⌘{}", index + 1));
+                        if !command_seen {
+                            return this.child(label.opacity(0.));
+                        }
+                        // A new id each way restarts the animation.
+                        let id = if command_held {
+                            "nav-shortcut-in"
+                        } else {
+                            "nav-shortcut-out"
+                        };
                         this.child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(theme::color(theme::RAIL_DIM))
-                                .child(format!("⌘{}", index + 1)),
+                            label.with_animation(
+                                (id, index),
+                                Animation::new(Duration::from_millis(150))
+                                    .with_easing(ease_out_quint()),
+                                move |label, delta| {
+                                    label.opacity(if command_held { delta } else { 1. - delta })
+                                },
+                            ),
                         )
                     })
                     .on_click(cx.listener(move |this, _, _, cx| this.show(screen, cx))),
@@ -281,6 +307,10 @@ impl Render for Shell {
             .bg(theme::color(theme::GROUND))
             .text_color(theme.foreground)
             .track_focus(&self.focus)
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
+                this.command_seen |= event.modifiers.platform;
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ShowDump, _, cx| this.show(Screen::Dump, cx)))
             .on_action(cx.listener(|this, _: &ShowLoad, _, cx| this.show(Screen::Load, cx)))
             .on_action(cx.listener(|this, _: &ShowDumps, _, cx| this.show(Screen::Dumps, cx)))
