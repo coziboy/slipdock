@@ -558,7 +558,7 @@ impl ProfilesView {
                         .child(
                             Button::new("delete-profile-confirm")
                                 .danger()
-                                .label("Delete profile")
+                                .label("Delete")
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
                                     view.update(cx, |this, cx| this.delete(&name, window, cx));
@@ -789,7 +789,7 @@ impl ProfilesView {
                             .child(
                                 Button::new("test-profile")
                                     .outline()
-                                    .label("Test connection")
+                                    .label("Test")
                                     .tooltip("Connects with the values in the form, saved or not")
                                     .loading(self.testing)
                                     .disabled(self.testing)

@@ -2,7 +2,7 @@
 //! -> target database -> confirmation -> run.
 //!
 //! A load drops and recreates tables. So the last step is a dialog that
-//! shows where the data is going, and "Start load" stays off until the name
+//! shows where the data is going, and "Start" stays off until the name
 //! of the target database has been typed. The check itself is the core's
 //! (`LoadPlan::confirms`), the same one the command line tool uses.
 
@@ -458,7 +458,7 @@ impl LoadView {
                         .child(
                             Button::new("load-start")
                                 .danger()
-                                .label("Start load")
+                                .label("Start")
                                 .disabled(!matches)
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
@@ -676,7 +676,7 @@ impl LoadView {
             .child(
                 widgets::wrap_row()
                     .child(
-                        Button::new("load-run").danger().label("Load…").on_click(
+                        Button::new("load-run").danger().label("Load").on_click(
                             cx.listener(|this, _, window, cx| this.request_load(window, cx)),
                         ),
                     )
@@ -717,15 +717,12 @@ impl Render for LoadView {
                 .child(run)
                 .when(finished, |this| {
                     this.child(
-                        h_flex().child(
-                            Button::new("load-back")
-                                .outline()
-                                .label("Back to the form")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.run = None;
-                                    cx.notify();
-                                })),
-                        ),
+                        h_flex().child(Button::new("load-back").outline().label("Back").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.run = None;
+                                cx.notify();
+                            }),
+                        )),
                     )
                 });
         }

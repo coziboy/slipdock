@@ -502,7 +502,7 @@ pub fn connection_failed(profile: &str, error: &str, retry: Button, cx: &App) ->
         ))
         .child(hint(
             "Check the host, the user and the password on the Profiles screen \
-             (\"Test connection\"), and that the server can be reached from here, \
+             (\"Test\"), and that the server can be reached from here, \
              for example through a VPN.",
             cx,
         ))

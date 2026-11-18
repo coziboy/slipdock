@@ -532,7 +532,7 @@ impl ToolsView {
                             Button::new((tool.name(), index))
                                 .small()
                                 .outline()
-                                .label("Use this one")
+                                .label("Use")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.set_path(tool, Some(path.clone()), cx)
                                 })),
@@ -548,7 +548,7 @@ impl ToolsView {
             Button::new((tool.name(), 100usize))
                 .small()
                 .outline()
-                .label("Choose file…")
+                .label("Browse")
                 .on_click(cx.listener(move |this, _, _, cx| this.choose_file(tool, cx))),
         );
         if status.configured.is_some() {
@@ -556,7 +556,7 @@ impl ToolsView {
                 Button::new((tool.name(), 101usize))
                     .small()
                     .outline()
-                    .label("Search automatically")
+                    .label("Find")
                     .on_click(cx.listener(move |this, _, _, cx| this.set_path(tool, None, cx))),
             );
         }
@@ -618,7 +618,7 @@ impl ToolsView {
                 InstallPlan::Steps(steps) => group
                     .child(widgets::hint(
                         "Slipdock does not run these steps. Do them in a terminal, then press \
-                         \u{201c}Check again\u{201d}.",
+                         \u{201c}Check\u{201d}.",
                         cx,
                     ))
                     .child(widgets::mono(&steps.join("\n"), cx)),
@@ -653,7 +653,7 @@ impl Render for ToolsView {
                     Button::new("recheck")
                         .outline()
                         .icon(IconName::RefreshCw)
-                        .label("Check again")
+                        .label("Check")
                         .loading(self.checking)
                         .on_click(cx.listener(|this, _, _, cx| {
                             // What the last install or change said is old now.

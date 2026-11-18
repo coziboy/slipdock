@@ -213,12 +213,12 @@ impl DumpsView {
         let (title, action, details) = match dumps.as_slice() {
             [dump] => (
                 "Delete this dump?".to_string(),
-                "Delete dump".to_string(),
+                "Delete".to_string(),
                 format!("{} tables · {size}", dump.tables),
             ),
             _ => (
                 format!("Delete {} dumps?", dumps.len()),
-                format!("Delete {} dumps", dumps.len()),
+                "Delete".to_string(),
                 format!("{size} in total"),
             ),
         };
@@ -390,7 +390,7 @@ impl Render for DumpsView {
                             this.child(
                                 Button::new("delete-selected")
                                     .danger()
-                                    .label(format!("Delete {} selected", self.selected.len()))
+                                    .label(format!("Delete {}", self.selected.len()))
                                     .loading(busy)
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _, window, cx| {

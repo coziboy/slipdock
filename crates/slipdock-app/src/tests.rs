@@ -314,11 +314,11 @@ fn dry_run_load_then_a_confirmed_load(cx: &mut TestAppContext) {
     assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
     assert!(load.read_with(&cx, |view, _| view.pending.is_some()));
 
-    // "Start load" is off until the typed name is the target database.
+    // "Start" is off until the typed name is the target database.
     let start_disabled = |cx: &mut VisualTestContext| {
         cx.update(|window, cx| {
             window.render_frame(cx);
-            window.find_by_label("Start load").disabled()
+            window.find_by_label("Start").disabled()
         })
     };
     assert_eq!(start_disabled(&mut cx), Some(true));
@@ -549,7 +549,7 @@ fn report_install_and_dialog_fit_the_smallest_window(cx: &mut TestAppContext) {
     cx.update(|window, cx| {
         shell.update(cx, |shell, cx| shell.show(Screen::Dump, cx));
         window.render_frame(cx);
-        assert!(window.try_find_by_label("Back to the form").is_some());
+        assert!(window.try_find_by_label("Back").is_some());
         assert_inside(window, width, "run report");
     });
 
@@ -581,7 +581,7 @@ fn report_install_and_dialog_fit_the_smallest_window(cx: &mut TestAppContext) {
     cx.update(|window, cx| {
         assert!(window.has_active_dialog(cx));
         window.render_frame(cx);
-        assert!(window.try_find_by_label("Start load").is_some());
+        assert!(window.try_find_by_label("Start").is_some());
         assert_inside(window, width, "load confirmation");
     });
 }
@@ -598,7 +598,7 @@ fn a_wide_window_centres_the_page(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.render_frame(cx);
-        let button = window.find_by_label("Run dump").bounds();
+        let button = window.find_by_label("Dump").bounds();
         let input = window.find_by_label("Select none").bounds();
         // Navigation 210, then (1590 - 980) / 2 of free space on each side.
         assert!(button.left() > gpui_kit::px(500.), "{:?}", button.left());
@@ -620,7 +620,7 @@ fn a_long_page_scrolls(cx: &mut TestAppContext) {
         let top = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| {
                 window.render_frame(cx);
-                window.find_by_label("Run dump").bounds().top()
+                window.find_by_label("Dump").bounds().top()
             })
         };
         let before = top(&mut cx);
@@ -660,7 +660,7 @@ fn the_page_starts_below_the_title_strip(cx: &mut TestAppContext) {
         cx.run_until_parked();
         cx.update(|window, cx| {
             window.render_frame(cx);
-            window.find_by_label("Run dump").bounds().top()
+            window.find_by_label("Dump").bounds().top()
         })
     };
 
@@ -849,7 +849,7 @@ fn ticked_dumps_are_deleted_after_a_confirmation(cx: &mut TestAppContext) {
     assert_eq!(listed(&mut cx).len(), 3);
     let ticked = vec![folder("20260101-000000"), folder("20260103-000000")];
 
-    // "Delete selected" only opens the dialog: nothing is deleted yet.
+    // "Delete N" only opens the dialog: nothing is deleted yet.
     cx.update(|window, cx| {
         dumps.update(cx, |view, cx| {
             view.select(&ticked, true, cx);
@@ -894,7 +894,7 @@ fn the_extra_icons_are_in_the_app() {
     assert!(crate::AppAssets.load("icons/check.svg").unwrap().is_some());
 }
 
-/// "Test connection" asks the server with what the form shows and says what
+/// "Test" asks the server with what the form shows and says what
 /// came back; "Delete" removes the profile and what was remembered for it.
 #[gpui_kit::test]
 fn a_profile_is_tested_and_deleted(cx: &mut TestAppContext) {

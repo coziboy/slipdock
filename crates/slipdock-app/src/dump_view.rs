@@ -536,7 +536,7 @@ impl DumpView {
                             Button::new("list-tables")
                                 .outline()
                                 .icon(IconName::RefreshCw)
-                                .label("List tables again")
+                                .label("Refresh")
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.list_tables(window, cx)),
                                 ),
@@ -705,7 +705,7 @@ impl DumpView {
                 .child(
                     Button::new("dump-run")
                         .primary()
-                        .label("Run dump")
+                        .label("Dump")
                         .on_click(cx.listener(|this, _, _, cx| this.prepare(false, cx))),
                 )
                 .child(
@@ -746,15 +746,12 @@ impl Render for DumpView {
                 .child(run)
                 .when(finished, |this| {
                     this.child(
-                        h_flex().child(
-                            Button::new("dump-back")
-                                .outline()
-                                .label("Back to the form")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.run = None;
-                                    cx.notify();
-                                })),
-                        ),
+                        h_flex().child(Button::new("dump-back").outline().label("Back").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.run = None;
+                                cx.notify();
+                            }),
+                        )),
                     )
                 });
         }
