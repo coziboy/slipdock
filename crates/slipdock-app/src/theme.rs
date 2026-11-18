@@ -92,6 +92,12 @@ fn theme_file() -> String {
         ("danger.foreground", PANEL),
         ("danger.hover.background", 0xB01E2D),
         ("danger.active.background", 0x98192A),
+        // The button library tints a danger button pale unless it is told
+        // otherwise; a button that destroys data is solid.
+        ("button.danger.background", DANGER),
+        ("button.danger.foreground", PANEL),
+        ("button.danger.hover.background", 0xB01E2D),
+        ("button.danger.active.background", 0x98192A),
         ("success.background", SUCCESS),
         ("success.foreground", PANEL),
         ("warning.background", WARNING),
