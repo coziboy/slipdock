@@ -31,6 +31,7 @@ Config folder: `$SLIPDOCK_CONFIG_DIR`, else `$XDG_CONFIG_HOME/slipdock`, else
   | Key | Meaning |
   | --- | --- |
   | `dump-dir` | where this profile's dumps go (`~` allowed). Required unless you pass `--out`. |
+  | `database` | the database the app's dump screen starts with (optional) |
   | `tls-verify = FALSE` | do not check the server's certificate (still encrypted) |
   | `password-store = keychain` | the password is in the system keychain, not in the file |
 

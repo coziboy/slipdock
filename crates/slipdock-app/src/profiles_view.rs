@@ -40,12 +40,21 @@ pub struct ProfilesView {
     user: Entity<InputState>,
     password: Entity<InputState>,
     pub(crate) dump_dir: Entity<InputState>,
+    /// The database the dump screen starts with; empty = none.
+    pub(crate) database: Entity<InputState>,
     /// The band of the profile in the form, as the colour field shows it.
     pub(crate) band: Entity<BandPicker>,
     tls_off: bool,
     keychain: bool,
     /// The connection test is waiting for the server.
     testing: bool,
+    /// The databases of the server in the form, to pick the profile's
+    /// database from.
+    pub(crate) databases: Vec<String>,
+    /// The server is being asked for its databases.
+    listing_databases: bool,
+    /// Why the last attempt to list the databases failed.
+    pub(crate) databases_error: Option<String>,
     /// Feedback after an action: (it worked, text).
     pub(crate) message: Option<(bool, String)>,
     /// Subscriptions end when they are dropped, so the view keeps them.
@@ -63,18 +72,20 @@ impl ProfilesView {
         let user = input("root", window, cx);
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
         let dump_dir = input("~/dumps", window, cx);
+        let database = input("None: pick one for each dump", window, cx);
         // "Unsaved changes" follows what is typed, so the form is drawn
         // again when a field changes.
-        let mut subscriptions: Vec<Subscription> = [&host, &port, &user, &password, &dump_dir]
-            .into_iter()
-            .map(|field| {
-                cx.subscribe(field, |_, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        cx.notify();
-                    }
+        let mut subscriptions: Vec<Subscription> =
+            [&host, &port, &user, &password, &dump_dir, &database]
+                .into_iter()
+                .map(|field| {
+                    cx.subscribe(field, |_, _, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            cx.notify();
+                        }
+                    })
                 })
-            })
-            .collect();
+                .collect();
         // Enter in the name field of the dialog does what "Create" does.
         subscriptions.push(cx.subscribe_in(
             &new_name,
@@ -100,10 +111,14 @@ impl ProfilesView {
             user,
             password,
             dump_dir,
+            database,
             band,
             tls_off: false,
             keychain: false,
             testing: false,
+            databases: Vec::new(),
+            listing_databases: false,
+            databases_error: None,
             message: None,
             _subscriptions: subscriptions,
         };
@@ -149,6 +164,7 @@ impl ProfilesView {
             || differs(&self.port, "client", "port")
             || differs(&self.user, "client", "user")
             || differs(&self.dump_dir, SECTION, "dump-dir")
+            || differs(&self.database, SECTION, "database")
             || password_differs
             || self.tls_off != profile.tls_verify_off()
             || self.keychain != was_keychain
@@ -167,6 +183,7 @@ impl ProfilesView {
             (&self.user, get("client", "user")),
             (&self.password, get("client", "password")),
             (&self.dump_dir, get(SECTION, "dump-dir")),
+            (&self.database, get(SECTION, "database")),
         ];
         self.tls_off = profile.tls_verify_off();
         self.keychain = profile.password_store() == PasswordStore::Keychain;
@@ -181,6 +198,7 @@ impl ProfilesView {
             .update(cx, |field, cx| field.set_color(band, window, cx));
         self.selected = Some(name.to_string());
         self.message = None;
+        self.list_databases(cx);
         cx.notify();
     }
 
@@ -333,6 +351,13 @@ impl ProfilesView {
         profile
             .doc
             .set(SECTION, "dump-dir", &value(&self.dump_dir))?;
+        // No database is no line, so the file stays as it was.
+        let database = value(&self.database);
+        if database.is_empty() {
+            profile.doc.remove(SECTION, "database");
+        } else {
+            profile.doc.set(SECTION, "database", &database)?;
+        }
         if self.tls_off {
             profile.doc.set(SECTION, "tls-verify", "FALSE")?;
         } else {
@@ -345,25 +370,15 @@ impl ProfilesView {
     /// server answered. Nothing is written.
     pub(crate) fn test_connection(&mut self, cx: &mut Context<Self>) {
         let ctx = core(cx);
-        let Some(name) = self.selected.clone() else {
-            return;
-        };
-        let prepared = ctx.profile(&name).and_then(|mut profile| {
-            self.apply_form(&mut profile, cx)?;
-            Ok(profile)
-        });
-        let profile = match prepared {
-            Ok(profile) => profile,
-            Err(error) => {
+        let (profile, password) = match self.form_profile(cx) {
+            Some(Ok(prepared)) => prepared,
+            Some(Err(error)) => {
                 self.message = Some((false, error.to_string()));
                 cx.notify();
                 return;
             }
+            None => return,
         };
-        // An empty field of a keychain profile means "the stored one".
-        let typed = self.password.read(cx).value().to_string();
-        let stored = typed.is_empty() && profile.password_store() == PasswordStore::Keychain;
-        let password = (!stored).then_some(typed);
         self.testing = true;
         self.message = None;
         cx.notify();
@@ -386,6 +401,113 @@ impl ProfilesView {
             });
         })
         .detach();
+    }
+
+    /// The selected profile with the form's values, saved or not, and the
+    /// typed password. `None` when no profile is selected.
+    fn form_profile(&self, cx: &App) -> Option<Result<(Profile, Option<String>)>> {
+        let name = self.selected.clone()?;
+        Some(core(cx).profile(&name).and_then(|mut profile| {
+            self.apply_form(&mut profile, cx)?;
+            // An empty field of a keychain profile means "the stored one".
+            let typed = self.password.read(cx).value().to_string();
+            let stored = typed.is_empty() && profile.password_store() == PasswordStore::Keychain;
+            Ok((profile, (!stored).then_some(typed)))
+        }))
+    }
+
+    /// Asks the server in the form, saved or not, for its databases, in the
+    /// background. Without an answer the database can still be typed.
+    pub(crate) fn list_databases(&mut self, cx: &mut Context<Self>) {
+        self.databases.clear();
+        self.databases_error = None;
+        let (profile, password) = match self.form_profile(cx) {
+            Some(Ok(prepared)) => prepared,
+            Some(Err(error)) => {
+                self.databases_error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+            None => return,
+        };
+        let ctx = core(cx);
+        let name = profile.name.clone();
+        self.listing_databases = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { server::unsaved_databases(&ctx, &profile, password.as_deref()) },
+                )
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // An answer for a profile that is no longer selected is dropped.
+                if this.selected.as_ref() != Some(&name) {
+                    return;
+                }
+                this.listing_databases = false;
+                match result {
+                    Ok(databases) => this.databases = databases,
+                    Err(error) => this.databases_error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The database field: the server's databases under it, as on the dump
+    /// screen, and a button that asks the server again.
+    fn render_database(&self, cx: &mut Context<Self>) -> Div {
+        let typed = self.database.read(cx).value().to_string();
+        let list = widgets::database_list(
+            "profile-databases",
+            &self.databases,
+            &typed,
+            |name| {
+                Box::new(cx.listener(move |this, _, window, cx| {
+                    this.database
+                        .update(cx, |input, cx| input.set_value(name.clone(), window, cx));
+                }))
+            },
+            cx,
+        );
+        let status = if self.listing_databases {
+            Some(widgets::hint("Asking the server for its databases…", cx))
+        } else {
+            self.databases_error
+                .clone()
+                .map(|error| widgets::hint(format!("{error}. Type the database instead."), cx))
+        };
+        v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.database)
+                                .cleanable(true)
+                                .font_family(cx.theme().mono_font_family.clone()),
+                        ),
+                    )
+                    .child(
+                        Button::new("list-profile-databases")
+                            .outline()
+                            .icon(IconName::Redo)
+                            .tooltip("List the databases of this server again")
+                            .loading(self.listing_databases)
+                            .disabled(self.listing_databases)
+                            .on_click(cx.listener(|this, _, _, cx| this.list_databases(cx))),
+                    ),
+            )
+            .children(list)
+            .children(status)
+            .child(widgets::hint(
+                "Chosen for you on the dump screen. Leave empty to pick one each time.",
+                cx,
+            ))
     }
 
     /// Asks before the profile in the form is deleted.
@@ -617,7 +739,9 @@ impl ProfilesView {
                     )),
             )
             .child(
-                group("Dumps", cx).child(widgets::field(
+                group("Dumps", cx)
+                    .child(widgets::field("Database", self.render_database(cx), cx))
+                    .child(widgets::field(
                     "Folder",
                     v_flex()
                         .gap_2()

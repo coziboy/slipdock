@@ -42,6 +42,29 @@ pub fn tables(ctx: &Context, profile: &Profile, database: &str) -> Result<Vec<Ta
 /// can test a form before it is saved. `password` is one that was typed;
 /// without it, the one in the profile or in the keychain is used.
 pub fn version(ctx: &Context, profile: &Profile, password: Option<&str>) -> Result<String> {
+    let defaults = unsaved_defaults(ctx, profile, password)?;
+    let output = run_query(ctx, profile, &defaults, "SELECT VERSION()")?;
+    Ok(output.trim().to_string())
+}
+
+/// Like [`databases`], but with the values of `profile` as they are in
+/// memory, as [`version`] takes them: a profile form can offer the
+/// databases before it is saved.
+pub fn unsaved_databases(
+    ctx: &Context,
+    profile: &Profile,
+    password: Option<&str>,
+) -> Result<Vec<String>> {
+    let defaults = unsaved_defaults(ctx, profile, password)?;
+    let output = run_query(ctx, profile, &defaults, "SHOW DATABASES")?;
+    Ok(parse_databases(&output))
+}
+
+fn unsaved_defaults(
+    ctx: &Context,
+    profile: &Profile,
+    password: Option<&str>,
+) -> Result<job::Defaults> {
     let mut doc = profile.doc.clone();
     if let Some(password) = password {
         doc.set("client", "password", password)?;
@@ -51,9 +74,7 @@ pub fn version(ctx: &Context, profile: &Profile, password: Option<&str>) -> Resu
         })?;
         doc.set("client", "password", &stored)?;
     }
-    let defaults = job::temporary_defaults(&doc)?;
-    let output = run_query(ctx, profile, &defaults, "SELECT VERSION()")?;
-    Ok(output.trim().to_string())
+    job::temporary_defaults(&doc)
 }
 
 fn query(ctx: &Context, profile: &Profile, sql: &str) -> Result<String> {

@@ -161,6 +161,39 @@ fn dry_run_dump_shows_the_command(cx: &mut TestAppContext) {
     );
 }
 
+/// A profile that names a database starts the dump form with it; one
+/// that names none leaves the field as it was.
+#[gpui_kit::test]
+fn the_database_of_the_profile_is_preselected(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let context = sandbox(&root);
+    let path = root.join("config/profiles/example.cnf");
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("{text}database = shop\n")).unwrap();
+    let (shell, mut cx) = open(cx, context);
+    let dump: Entity<DumpView> = shell.read_with(&cx, |shell, _| shell.dump.clone());
+    let field = |cx: &VisualTestContext| {
+        dump.read_with(cx, |view, cx| view.database.read(cx).value().to_string())
+    };
+
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.pick_profile("example".into(), window, cx)
+        })
+    });
+    assert_eq!(field(&cx), "shop");
+
+    fs::write(&path, text).unwrap();
+    cx.update(|window, cx| {
+        dump.update(cx, |view, cx| {
+            view.database
+                .update(cx, |input, cx| input.set_value("typed_db", window, cx));
+            view.pick_profile("example".into(), window, cx);
+        })
+    });
+    assert_eq!(field(&cx), "typed_db");
+}
+
 fn tables(names: &[&str]) -> Vec<(Table, bool)> {
     names
         .iter()
@@ -648,6 +681,21 @@ fn the_page_starts_below_the_title_strip(cx: &mut TestAppContext) {
         assert_eq!(top(true, &mut cx), plain, "full screen, at {width} wide");
         cx.update(|window, _| window.toggle_fullscreen());
     }
+}
+
+/// The profile form asks the server for its databases, so the profile's
+/// database is picked from a list, like on the dump screen.
+#[gpui_kit::test]
+fn the_profile_form_lists_the_databases_of_the_server(cx: &mut TestAppContext) {
+    let (_temp, root) = temp_root();
+    let (shell, mut cx) = open(cx, sandbox(&root));
+    let profiles = shell.read_with(&cx, |shell, _| shell.profiles.clone());
+    cx.update(|window, cx| profiles.update(cx, |view, cx| view.select("example", window, cx)));
+    cx.run_until_parked();
+    profiles.read_with(&cx, |view, _| {
+        assert_eq!(view.databases, vec!["example_db".to_string()]);
+        assert!(view.databases_error.is_none(), "{:?}", view.databases_error);
+    });
 }
 
 /// The folder button of the profile form asks for one folder and writes it

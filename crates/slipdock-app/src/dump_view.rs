@@ -139,6 +139,10 @@ impl DumpView {
             .and_then(|profile| profile.dump_dir(ctx.home.as_deref()))
             .map(|dir| widgets::tilde_path(&dir, ctx.home.as_deref()))
             .unwrap_or_default();
+        let ctx_database = ctx
+            .profile(&name)
+            .ok()
+            .and_then(|profile| profile.database().map(str::to_string));
         self.out
             .update(cx, |input, cx| input.set_value(dump_dir, window, cx));
         self.server = server_of(&name, cx);
@@ -150,6 +154,11 @@ impl DumpView {
         self.list_note = None;
         self.preview = None;
         self.list_databases(cx);
+        // A profile that names a database starts with it, tables listed.
+        // Without one the field keeps what it had, as before.
+        if let Some(database) = ctx_database {
+            self.pick_database(database, window, cx);
+        }
     }
 
     /// Asks the server for its databases, in the background.

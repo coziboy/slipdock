@@ -230,6 +230,13 @@ impl Profile {
         (!value.is_empty()).then(|| platform::expand_tilde(value, home))
     }
 
+    /// The database the dump screen starts with. `None` when unset: the
+    /// database is then picked for each dump.
+    pub fn database(&self) -> Option<&str> {
+        let value = self.doc.get(SECTION, "database")?.trim();
+        (!value.is_empty()).then_some(value)
+    }
+
     /// Like [`Profile::dump_dir`], but explains the fix when it is unset.
     pub fn need_dump_dir(&self, home: Option<&Path>) -> Result<PathBuf> {
         self.dump_dir(home).ok_or_else(|| {
