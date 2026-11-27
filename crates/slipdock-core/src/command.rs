@@ -111,6 +111,8 @@ pub struct Dump<'a> {
     pub tls_off: bool,
     /// The `PATH` mydumper needs to find `zstd`, when its own would not do.
     pub path: Option<&'a str>,
+    /// Write the log as JSON events (`--machine-log-json`).
+    pub json_log: bool,
 }
 
 pub fn mydumper(dump: &Dump) -> Invocation {
@@ -125,7 +127,15 @@ pub fn mydumper(dump: &Dump) -> Invocation {
         .args(["--outputdir".as_ref(), dump.out.as_os_str()])
         .args(["--compress", "ZSTD"])
         .args(["--logfile".as_ref(), dump.log.as_os_str()])
+        .args(json_log_arg(dump.json_log, dump.extra_args))
         .args(dump.extra_args)
+}
+
+/// `--machine-log-json`, unless it is off or already among the extra
+/// arguments.
+fn json_log_arg(on: bool, extra_args: &[String]) -> Option<&'static str> {
+    let given = extra_args.iter().any(|a| a == crate::tool_event::OPTION);
+    (on && !given).then_some(crate::tool_event::OPTION)
 }
 
 pub struct Load<'a> {
@@ -140,6 +150,8 @@ pub struct Load<'a> {
     pub tls_off: bool,
     /// The `PATH` myloader needs to find `zstd`, when its own would not do.
     pub path: Option<&'a str>,
+    /// Write the log as JSON events (`--machine-log-json`).
+    pub json_log: bool,
 }
 
 pub fn myloader(load: &Load) -> Invocation {
@@ -150,6 +162,7 @@ pub fn myloader(load: &Load) -> Invocation {
         .args(["--database", load.database])
         .args(["--drop-table", "DROP"])
         .args(["--logfile".as_ref(), load.log.as_os_str()])
+        .args(json_log_arg(load.json_log, load.extra_args))
         .args(load.extra_args)
 }
 
@@ -285,6 +298,7 @@ mod tests {
             extra_args: &[],
             tls_off: false,
             path: None,
+            json_log: false,
         }
     }
 
@@ -359,6 +373,7 @@ mod tests {
             extra_args: &[],
             tls_off: false,
             path: None,
+            json_log: false,
         }
     }
 
@@ -453,6 +468,35 @@ mod tests {
             ..load()
         });
         assert_eq!(invocation.env.len(), 1);
+    }
+
+    #[test]
+    fn the_json_log_option_is_added_once() {
+        let dump_args = strings(&mydumper(&Dump {
+            json_log: true,
+            ..dump()
+        }));
+        assert_eq!(
+            dump_args
+                .iter()
+                .filter(|a| *a == "--machine-log-json")
+                .count(),
+            1
+        );
+        let extra = ["--machine-log-json".to_string()];
+        let load_args = strings(&myloader(&Load {
+            json_log: true,
+            extra_args: &extra,
+            ..load()
+        }));
+        assert_eq!(
+            load_args
+                .iter()
+                .filter(|a| *a == "--machine-log-json")
+                .count(),
+            1
+        );
+        assert!(!strings(&myloader(&load())).contains(&"--machine-log-json".to_string()));
     }
 
     #[test]

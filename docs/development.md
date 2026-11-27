@@ -112,6 +112,7 @@ Core modules, each small and with its own tests:
 | `command` | builds the exact argument lists; the preview text |
 | `dumps` | reads dump folders: size, tables, complete or partial |
 | `run` | runs a tool on a thread, sends progress over a channel, cancel |
+| `tool_event` | reads the JSON log of mydumper/myloader (`--machine-log-json`, 1.0.19+) into a run state: stage, files, threads, problems, summary |
 | `job` | a dump or load in steps: plan, prepare, start, report |
 | `report` | summaries and reports as data, drawn by each front end |
 | `server` | lists databases and tables through the mysql client |

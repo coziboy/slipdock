@@ -175,12 +175,7 @@ fn execute(prepared: &Prepared, run: &RunOptions, interrupt: &AtomicBool) -> Res
         }
         match event {
             Event::Progress(progress) => {
-                let detail = match progress.written {
-                    Some((files, size)) => {
-                        format!(" · {files} files · {}", dumps::human_size(size))
-                    }
-                    None => String::new(),
-                };
+                let detail = report::progress_detail(&progress);
                 line.draw(
                     &prepared.label,
                     &report::duration(progress.elapsed),

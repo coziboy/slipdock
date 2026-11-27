@@ -25,6 +25,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::command::Invocation;
+use crate::tool_event::{self, RunState};
 use crate::{Error, Result, dumps, platform};
 
 const TICK: Duration = Duration::from_millis(200);
@@ -49,6 +50,9 @@ pub struct Progress {
     pub elapsed: Duration,
     /// For dumps: files written so far and their total size.
     pub written: Option<(usize, u64)>,
+    /// What the tool's log tells: stage, files and tables done, threads,
+    /// problems. See [`crate::tool_event`].
+    pub state: RunState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +85,8 @@ impl Outcome {
 
 #[derive(Debug)]
 pub enum Event {
-    Progress(Progress),
+    /// Boxed: with its run state it is many times bigger than `Finished`.
+    Progress(Box<Progress>),
     Finished(Outcome),
 }
 
@@ -117,6 +122,17 @@ pub struct Running {
 ///   file at the end, under a `--- tool output ---` line. (The tool writes
 ///   its normal log there itself, through `--logfile`.)
 pub fn start(invocation: &Invocation, watch: Option<&Path>, log: &Path) -> Result<Running> {
+    start_with(invocation, watch, log, RunState::default())
+}
+
+/// [`start`] with a run state to begin from, for example the tables of the
+/// dump a load reads (see [`RunState::for_load`]).
+pub fn start_with(
+    invocation: &Invocation,
+    watch: Option<&Path>,
+    log: &Path,
+    initial: RunState,
+) -> Result<Running> {
     // stdout and stderr go to one unnamed temp file, in the order written.
     let mut output = tempfile::tempfile().map_err(|source| Error::Io {
         context: "cannot create a temporary file".into(),
@@ -146,6 +162,8 @@ pub fn start(invocation: &Invocation, watch: Option<&Path>, log: &Path) -> Resul
         let started = Instant::now();
         let mut signalled: Option<Instant> = None;
         let mut written = None;
+        let mut state = initial;
+        let mut log_reader = LogReader::raw(&log, 4 * 1024 * 1024);
         let mut tick = 0;
         let status = loop {
             match child.try_wait() {
@@ -174,11 +192,15 @@ pub fn start(invocation: &Invocation, watch: Option<&Path>, log: &Path) -> Resul
             {
                 written = Some((dumps::sql_file_count(dir), dumps::dir_size(dir)));
             }
+            if tick % MEASURE_EVERY == 0 {
+                state.take_text(&log_reader.read_new());
+            }
             // A send fails only when the receiver is gone; the run goes on.
-            let _ = sender.send(Event::Progress(Progress {
+            let _ = sender.send(Event::Progress(Box::new(Progress {
                 elapsed: started.elapsed(),
                 written,
-            }));
+                state: state.clone(),
+            })));
             tick += 1;
             thread::sleep(TICK);
         };
@@ -215,6 +237,19 @@ fn read_all(file: &mut File) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// The last `Progress X of Y` in myloader's log text: files restored and
+/// the total. (Its `part N of M` and `Tables X of Y` counters are left out:
+/// the first counts a queue, the second stays at 0 until the very end.)
+pub fn last_restore_progress(text: &str) -> Option<(usize, usize)> {
+    text.lines().rev().find_map(|line| {
+        let rest = line.split_once("Progress ")?.1;
+        let (done, rest) = rest.split_once(" of ")?;
+        let total: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        let (done, total) = (done.trim().parse().ok()?, total.parse().ok()?);
+        (total > 0 && done <= total).then_some((done, total))
+    })
+}
+
 /// The line in the log file above what the tool printed to its terminal.
 pub const TOOL_OUTPUT_MARKER: &str = "--- tool output ---";
 
@@ -234,9 +269,13 @@ fn append_tool_output(log: &Path, text: &str) {
 /// ** (mydumper:42720): CRITICAL **: 12:55:04.027: zstd was not found
 /// ```
 ///
-/// becomes `CRITICAL: zstd was not found`. Other lines are returned as they
-/// are. The log file keeps the full text.
+/// becomes `CRITICAL: zstd was not found`. A JSON event (see
+/// [`crate::tool_event`]) becomes `16:57:36 restoring data chunk · big`.
+/// Other lines are returned as they are. The log file keeps the full text.
 pub fn tidy_line(line: &str) -> String {
+    if let Some(readable) = tool_event::readable_line(line) {
+        return readable;
+    }
     let parsed = || {
         let rest = line.strip_prefix("** ")?;
         // Plain messages have a shorter form: `** Message: 12:55:04.027: text`.
@@ -264,9 +303,18 @@ pub fn tidy_line(line: &str) -> String {
 
 /// The distinct problems in a mydumper/myloader log, sorted: the text after
 /// `[ERROR] - `, `[WARNING] - ` or `[CRITICAL] - ` of each such line.
-pub fn log_problems(log: &Path) -> Vec<String> {
+///
+/// For a JSON log: the text of each event [`ToolEvent::is_problem`] picks.
+///
+/// [`ToolEvent::is_problem`]: tool_event::ToolEvent::is_problem
+pub fn log_problems(log: &Path, ignored_errors: &[String]) -> Vec<String> {
     let text = fs::read(log).unwrap_or_default();
     let text = String::from_utf8_lossy(&text);
+    let mut state = RunState::default().ignoring(ignored_errors);
+    state.read_log(log);
+    if state.json {
+        return state.problems.into_iter().map(|p| p.text).collect();
+    }
     let mut problems: Vec<String> = text
         .lines()
         .filter_map(|line| {
@@ -335,6 +383,8 @@ pub struct LogReader {
     tool_output: String,
     in_tool_output: bool,
     skipped: bool,
+    /// False for [`LogReader::raw`]: lines come back as written.
+    tidy: bool,
 }
 
 impl LogReader {
@@ -347,6 +397,16 @@ impl LogReader {
             tool_output: String::new(),
             in_tool_output: false,
             skipped: false,
+            tidy: true,
+        }
+    }
+
+    /// A reader that gives the lines as the tool wrote them, for reading
+    /// its JSON events.
+    pub fn raw(path: impl Into<PathBuf>, limit: u64) -> Self {
+        LogReader {
+            tidy: false,
+            ..LogReader::new(path, limit)
         }
     }
 
@@ -424,7 +484,11 @@ impl LogReader {
             } else {
                 &mut lines
             };
-            to.push_str(&tidy_line(line));
+            if self.tidy {
+                to.push_str(&tidy_line(line));
+            } else {
+                to.push_str(line);
+            }
             to.push('\n');
         }
         lines
@@ -449,11 +513,21 @@ mod tests {
         let mut progress = Vec::new();
         for event in &running.events {
             match event {
-                Event::Progress(p) => progress.push(p),
+                Event::Progress(p) => progress.push(*p),
                 Event::Finished(outcome) => return (outcome, progress),
             }
         }
         panic!("the channel closed without Event::Finished");
+    }
+
+    #[test]
+    fn the_last_restore_progress_is_read_from_myloader_lines() {
+        let text = "2026-11-27 16:29:59 [INFO] - Thread 4: restoring db.t part 43 of 19 from db.t.00530.sql.zst | Progress 621 of 698. Tables 0 of 65 completed\n\
+                    2026-11-27 16:30:01 [INFO] - Thread 1: restoring db.a part 192 of 57 from db.a.00295.sql.zst | Progress 622 of 698. Tables 0 of 65 completed\n\
+                    2026-11-27 16:30:02 [INFO] - Thread 1: shutting down\n";
+        assert_eq!(last_restore_progress(text), Some((622, 698)));
+        assert_eq!(last_restore_progress("no progress here\n"), None);
+        assert_eq!(last_restore_progress(""), None);
     }
 
     #[test]
@@ -479,6 +553,23 @@ mod tests {
             fs::read_to_string(&log).unwrap(),
             "tool log line\n--- tool output ---\nfrom-env\n"
         );
+    }
+
+    #[test]
+    fn the_events_in_the_log_reach_the_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("run.log");
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/load.jsonl");
+        let script = format!("cat {fixture} >> {} && sleep 1.5", log.display());
+
+        let running = start(&sh(&script), None, &log).unwrap();
+        let (outcome, progress) = wait(&running);
+
+        assert_eq!(outcome.exit_code(), 0);
+        let last = &progress.last().unwrap().state;
+        assert!(last.json);
+        assert_eq!(last.files, Some((12, 12)));
+        assert_eq!(last.stage, Some(crate::tool_event::Stage::Done));
     }
 
     #[test]
@@ -568,10 +659,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            log_problems(&log),
+            log_problems(&log, &[]),
             ["Another", "Broken thing", "Couldn't get master position"]
         );
-        assert!(log_problems(&temp.path().join("missing.log")).is_empty());
+        assert!(log_problems(&temp.path().join("missing.log"), &[]).is_empty());
     }
 
     #[test]

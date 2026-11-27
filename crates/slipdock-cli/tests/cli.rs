@@ -242,6 +242,7 @@ slipdock dump
       --outputdir {root}/dumps/example_db__example__TIME \\
       --compress ZSTD \\
       --logfile {root}/dumps/example_db__example__TIME.log \\
+      --machine-log-json \\
       --threads 2
 (dry run, nothing executed)
 "
@@ -420,7 +421,8 @@ slipdock load
       --directory {root}/dumps/example_db__example__TIME \\
       --database example_db \\
       --drop-table DROP \\
-      --logfile {root}/dumps/example_db__example__TIME__load_example_TIME2.log
+      --logfile {root}/dumps/example_db__example__TIME__load_example_TIME2.log \\
+      --machine-log-json
 (dry run, nothing executed)
 "
     );

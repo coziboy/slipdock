@@ -136,6 +136,53 @@ pub fn tls_note() -> Line {
     )
 }
 
+/// The detail after a run's label and time on its progress line:
+/// ` · Data · 89% · about 1:15 left` for a load, ` · Data · 20M` for a
+/// dump. No file counts: how mydumper splits a table is not the user's
+/// concern.
+pub fn progress_detail(progress: &crate::run::Progress) -> String {
+    progress_detail_at(progress, Some(crate::tool_event::now()))
+}
+
+/// [`progress_detail`] at a given time of day, which the estimate for the
+/// files in work is made for.
+pub fn progress_detail_at(
+    progress: &crate::run::Progress,
+    now: Option<jiff::civil::DateTime>,
+) -> String {
+    let mut text = String::new();
+    let state = &progress.state;
+    if let Some(stage) = state.stage.filter(|_| state.json) {
+        text.push_str(&format!(" · {}", stage.name()));
+    }
+    if let Some((_, size)) = progress.written {
+        text.push_str(&format!(" · {}", crate::dumps::human_size(size)));
+    }
+    if let Some(share) = state.share(now) {
+        text.push_str(&format!(" · {}", share.percent()));
+        let done = f64::from(share.fraction);
+        if done > 0.0 && done < 1.0 {
+            let left = progress.elapsed.mul_f64((1.0 - done) / done);
+            text.push_str(&format!(" · about {} left", duration(left)));
+        }
+    } else if let Some((done, total)) = state.tables {
+        text.push_str(&format!(" · {done} of {total} tables"));
+    }
+    text
+}
+
+/// The line over a run's table list: `3 of 65 tables done · now
+/// account_targets, targets`.
+pub fn tables_heading(state: &crate::tool_event::RunState) -> String {
+    let (done, total) = state.rows_done();
+    let mut text = format!("{done} of {total} tables done");
+    let active = state.active_tables();
+    if !active.is_empty() {
+        text.push_str(&format!(" · now {}", active.join(", ")));
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +247,47 @@ mod tests {
             success: false,
         };
         assert_eq!(notice("example_db", &empty).title, "Failed");
+    }
+
+    #[test]
+    fn progress_detail_names_the_stage_share_and_time_left() {
+        use crate::run::Progress;
+        use crate::tool_event::{RunState, Stage};
+        let progress = Progress {
+            elapsed: Duration::from_secs(60),
+            written: None,
+            state: RunState {
+                json: true,
+                stage: Some(Stage::Data),
+                files: Some((25, 100)),
+                ..RunState::default()
+            },
+        };
+        assert_eq!(
+            progress_detail(&progress),
+            format!(
+                " · Data · 25% · about {} left",
+                duration(Duration::from_secs(180))
+            )
+        );
+        let dump = Progress {
+            elapsed: Duration::from_secs(5),
+            written: Some((3, 2048)),
+            state: RunState::default(),
+        };
+        assert_eq!(progress_detail(&dump), " · 2.0K");
+    }
+
+    #[test]
+    fn the_tables_heading_counts_done_and_names_the_active_ones() {
+        use crate::tool_event::RunState;
+        use crate::tool_event::TableFiles;
+        let table = |name: &str| TableFiles {
+            name: name.into(),
+            files: vec![(format!("db.{name}.00000.sql.zst"), 10)],
+        };
+        let state = RunState::for_load(vec![table("a"), table("b")]);
+        assert_eq!(tables_heading(&state), "0 of 2 tables done");
     }
 
     #[test]

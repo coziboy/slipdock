@@ -17,6 +17,7 @@ pub mod run;
 pub mod secrets;
 pub mod server;
 pub mod settings;
+pub mod tool_event;
 pub mod tools;
 
 pub use error::{Error, Result};

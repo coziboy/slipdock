@@ -23,6 +23,7 @@ use crate::report::{self, Line, Report};
 use crate::run::{self, Outcome, Running};
 use crate::secrets::SecretStore;
 use crate::settings::{self, Settings};
+use crate::tool_event::{self, RunState};
 use crate::tools::{self, SearchDirs, Tool};
 use crate::{Error, Result, dumps, platform};
 
@@ -356,6 +357,7 @@ impl DumpPlan {
             extra_args: &options.extra_args,
             tls_off: self.profile.tls_verify_off(),
             path: self.tool_path.as_deref(),
+            json_log: tool_event::supported(Tool::Mydumper, &self.program),
         });
         Ok(Prepared {
             invocation,
@@ -368,6 +370,8 @@ impl DumpPlan {
                 .or(self.profile.verbose("mydumper"))
                 .unwrap_or(2),
             home: ctx.home.clone(),
+            ignored_errors: ignored_errors(ctx, &self.profile, "mydumper", &options.extra_args),
+            skip_checksums: false,
             _defaults: defaults,
         })
     }
@@ -509,6 +513,7 @@ impl LoadPlan {
             extra_args: &options.extra_args,
             tls_off: self.profile.tls_verify_off(),
             path: self.tool_path.as_deref(),
+            json_log: tool_event::supported(Tool::Myloader, &self.program),
         });
         Ok(Prepared {
             invocation,
@@ -522,8 +527,11 @@ impl LoadPlan {
             kind: Kind::Load {
                 target: self.target,
                 tables: self.tables,
+                dir: self.dir,
             },
             home: ctx.home.clone(),
+            ignored_errors: ignored_errors(ctx, &self.profile, "myloader", &options.extra_args),
+            skip_checksums: skips_checksums(ctx, &self.profile, &options.extra_args),
             _defaults: defaults,
         })
     }
@@ -532,8 +540,15 @@ impl LoadPlan {
 // --- Prepared: ready to run -----------------------------------------------------------
 
 enum Kind {
-    Dump { out: PathBuf },
-    Load { target: String, tables: usize },
+    Dump {
+        out: PathBuf,
+    },
+    Load {
+        target: String,
+        tables: usize,
+        /// The dump folder, to list its tables.
+        dir: PathBuf,
+    },
 }
 
 /// A job that is ready to run. Holds the temporary defaults file, if any;
@@ -549,6 +564,10 @@ pub struct Prepared {
     /// The log level in effect (run option, else profile, else 2).
     level: u8,
     home: Option<PathBuf>,
+    /// MySQL error numbers the tool was told to ignore.
+    ignored_errors: Vec<String>,
+    /// A load told to skip its checksums.
+    skip_checksums: bool,
     _defaults: Defaults,
 }
 
@@ -559,11 +578,41 @@ impl Prepared {
     }
 
     pub fn start(&self) -> Result<Running> {
-        let watch = match &self.kind {
-            Kind::Dump { out } => Some(out.as_path()),
-            Kind::Load { .. } => None,
-        };
-        run::start(&self.invocation, watch, &self.log)
+        match &self.kind {
+            Kind::Dump { out } => run::start_with(
+                &self.invocation,
+                Some(out.as_path()),
+                &self.log,
+                RunState::for_dump().ignoring(&self.ignored_errors),
+            ),
+            Kind::Load { dir, .. } => run::start_with(
+                &self.invocation,
+                None,
+                &self.log,
+                RunState::for_load(dumps::data_files_per_table(dir)).ignoring(&self.ignored_errors),
+            ),
+        }
+    }
+
+    /// The stages this kind of run goes through, for a stepper.
+    /// The stages this run goes through, for a stepper. A load that skips
+    /// its checksums has no Checksums stage.
+    pub fn stages(&self) -> Vec<tool_event::Stage> {
+        match self.kind {
+            Kind::Dump { .. } => tool_event::Stage::DUMP.to_vec(),
+            Kind::Load { .. } => tool_event::Stage::LOAD
+                .iter()
+                .copied()
+                .filter(|stage| !(self.skip_checksums && *stage == tool_event::Stage::Checksums))
+                .collect(),
+        }
+    }
+
+    /// What the log of the finished run tells, without ignored errors.
+    fn log_state(&self) -> RunState {
+        let mut state = RunState::default().ignoring(&self.ignored_errors);
+        state.read_log(&self.log);
+        state
     }
 
     fn show(&self, path: &Path) -> String {
@@ -595,7 +644,7 @@ impl Prepared {
         let took = report::duration(outcome.elapsed);
         let success = match &self.kind {
             Kind::Dump { out } => self.report_dump(&mut lines, out, code, &took),
-            Kind::Load { target, tables } => {
+            Kind::Load { target, tables, .. } => {
                 self.report_load(&mut lines, target, *tables, code, &took)
             }
         };
@@ -615,10 +664,16 @@ impl Prepared {
             return false;
         }
         let size = dumps::human_size(dumps::dir_size(out));
+        let state = self.log_state();
+        let files = state
+            .summary
+            .as_ref()
+            .map(|summary| format!(" · {} files", summary.files))
+            .unwrap_or_default();
         lines.push(Line::Ok {
             text: "Dump complete".into(),
             note: Some(format!(
-                "{took} · {} tables · {size}",
+                "{took} · {} tables{files} · {size}",
                 dumps::table_count(out)
             )),
         });
@@ -633,7 +688,7 @@ impl Prepared {
             lines.push(Line::Warn(format!(
                 "mydumper exited with {code}, but the dump is complete. It reported:"
             )));
-            let problems = run::log_problems(&self.log);
+            let problems = run::log_problems(&self.log, &self.ignored_errors);
             if !problems.is_empty() {
                 lines.extend(problems.into_iter().map(|p| Line::Text(format!("  {p}"))));
             } else if self.level < 2 {
@@ -662,18 +717,28 @@ impl Prepared {
         code: i32,
         took: &str,
     ) -> bool {
+        let state = self.log_state();
         if code == 0 {
+            let mut note = format!("{took} · {tables} tables into {target}");
+            if let Some(summary) = &state.summary {
+                note = format!(
+                    "{took} · {} tables · {} files into {target}",
+                    summary.tables, summary.files
+                );
+            }
             lines.push(Line::Ok {
                 text: "Load complete".into(),
-                note: Some(format!("{took} · {tables} tables into {target}")),
+                note: Some(note),
             });
             lines.push(Line::row("Log", self.show(&self.log)));
+            tool_findings(lines, &state, "myloader");
             return true;
         }
         lines.push(Line::Fail(format!(
             "Load failed (exit {code}) after {took}"
         )));
         lines.push(Line::row("Log", self.show(&self.log)));
+        tool_findings(lines, &state, "myloader");
         // myloader, like mydumper, can exit 1 over problems it only logs as
         // warnings; below level 2 those are not recorded anywhere.
         let log_is_empty = fs::metadata(&self.log).map_or(true, |meta| meta.len() == 0);
@@ -690,6 +755,101 @@ impl Prepared {
             }
         }
         false
+    }
+}
+
+/// Every value a run gives `tool`'s option `key`, from wherever it can be
+/// set: the arguments in the settings, the profile's `[mydumper]` or
+/// `[myloader]` section, and the extra arguments of the run (`--key value`
+/// or `--key=value`). In that order, so the last one is the one in effect.
+fn option_values(
+    ctx: &Context,
+    profile: &Profile,
+    tool: &str,
+    extra_args: &[String],
+    key: &str,
+) -> Vec<String> {
+    let mut values: Vec<String> = Vec::new();
+    let settings = match tool {
+        "mydumper" => &ctx.settings.options.mydumper.arguments,
+        _ => &ctx.settings.options.myloader.arguments,
+    };
+    if let Ok(pairs) = settings::parse_arguments(settings) {
+        values.extend(
+            pairs
+                .into_iter()
+                .filter(|(name, _)| name == key)
+                .map(|(_, value)| value),
+        );
+    }
+    values.extend(profile.doc.get(tool, key).map(str::to_string));
+    let flag = format!("--{key}");
+    let with_value = format!("--{key}=");
+    let mut args = extra_args.iter();
+    while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix(&with_value) {
+            values.push(value.to_string());
+        } else if *arg == flag {
+            values.extend(args.next().cloned());
+        }
+    }
+    values
+}
+
+/// The MySQL error numbers a run tells `tool` to ignore (`ignore-errors`,
+/// a comma-separated list such as `1227,1146`, wherever it is set).
+fn ignored_errors(
+    ctx: &Context,
+    profile: &Profile,
+    tool: &str,
+    extra_args: &[String],
+) -> Vec<String> {
+    let mut codes: Vec<String> = option_values(ctx, profile, tool, extra_args, "ignore-errors")
+        .iter()
+        .flat_map(|list| list.split(','))
+        .map(|code| code.trim().to_string())
+        .filter(|code| !code.is_empty())
+        .collect();
+    codes.sort();
+    codes.dedup();
+    codes
+}
+
+/// Whether a load tells myloader to skip its checksums (`checksum = skip`).
+fn skips_checksums(ctx: &Context, profile: &Profile, extra_args: &[String]) -> bool {
+    option_values(ctx, profile, "myloader", extra_args, "checksum")
+        .last()
+        .is_some_and(|mode| mode.trim().eq_ignore_ascii_case("skip"))
+}
+
+/// What a JSON log adds to a load report: the problems the tool logged
+/// (stopping ones first) and tables whose checksum did not match.
+fn tool_findings(lines: &mut Vec<Line>, state: &RunState, tool: &str) {
+    if !state.checksum_mismatches.is_empty() {
+        lines.push(Line::Blank);
+        lines.push(Line::Warn(format!(
+            "Checksum differs for {}",
+            state.checksum_mismatches.join(", ")
+        )));
+    }
+    if state.problems.is_empty() {
+        return;
+    }
+    lines.push(Line::Blank);
+    lines.push(Line::Text(format!("{tool} reported:")));
+    let mut problems: Vec<_> = state.problems.iter().collect();
+    problems.sort_by_key(|p| std::cmp::Reverse(p.level));
+    for problem in problems {
+        let text = match problem.count {
+            1 => problem.text.clone(),
+            n => format!("{} (×{n})", problem.text),
+        };
+        // By level: myloader marks some warnings fatal and goes on.
+        lines.push(if problem.level >= tool_event::Level::Error {
+            Line::Fail(text)
+        } else {
+            Line::Warn(text)
+        });
     }
 }
 
@@ -836,6 +996,8 @@ dump-dir = ~/dumps
                 "ZSTD",
                 "--logfile",
                 &format!("{}.log", out.display()),
+                // The fake tool answers --version with 1.0.19.
+                "--machine-log-json",
             ]
         );
         assert_eq!(prepared.label, "Dumping example_db");
@@ -1130,6 +1292,7 @@ dump-dir = ~/dumps
                 "DROP",
                 "--logfile",
                 &log,
+                "--machine-log-json",
             ]
         );
         assert_eq!(prepared.label, "Loading into example_db");
@@ -1408,6 +1571,92 @@ mkdir -p "$out" && echo done > "$out/metadata""#,
             "{text}"
         );
         assert!(text.contains("The log is empty: this profile logs errors only (verbose = 1),"));
+    }
+
+    #[test]
+    fn a_load_report_shows_what_the_json_log_says() {
+        let s = setup(PROFILE);
+        let dir = s.ctx.home.as_ref().unwrap().join("dumps/d");
+        dump_fixture(&dir, true);
+        // The fake myloader writes `log_lines` to its --logfile.
+        let run = |log_lines: &str, exit: i32| {
+            let body = format!(
+                "if [ \"$1\" = --version ]; then {}; exit 0; fi\n\
+                 while [ $# -gt 0 ]; do [ \"$1\" = --logfile ] && log=\"$2\"; shift; done\n\
+                 cat > \"$log\" <<'EOF'\n{log_lines}EOF\nexit {exit}",
+                version_only("myloader")
+            );
+            fake_tool(&s.ctx.dirs.path[0], "myloader", &body);
+            let options = LoadOptions {
+                dry_run: false,
+                ..load_options(&dir)
+            };
+            let prepared = plan_load(&s.ctx, options)
+                .unwrap()
+                .prepare(&s.ctx, TS)
+                .unwrap();
+            let outcome = run_to_end(&prepared);
+            prepared.report(&outcome)
+        };
+
+        let ok = run(include_str!("../tests/data/load.jsonl"), 0);
+        assert!(ok.success);
+        let text = ok.plain();
+        assert!(
+            text.starts_with("✓ Load complete  0:00 · 3 tables · 18 files into example_db"),
+            "{text}"
+        );
+        // The GLib assertion in the log is not reported.
+        assert!(!text.contains("reported"), "{text}");
+
+        let failed = run(
+            "{\"ts\":\"2026-11-27 16:51:50.1\",\"level\":\"ERROR\",\"event\":\"mysql_connect\",\"status\":\"failed\",\"message\":\"Error connection to database\",\"fatal\":true,\"mysql_errno\":\"2002\"}\n",
+            1,
+        );
+        assert!(!failed.success);
+        let text = failed.plain();
+        assert!(
+            text.contains(
+                "myloader reported:\n✗ ERROR: Error connection to database (MySQL error 2002)"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn ignore_errors_is_read_from_the_settings_the_profile_and_the_extra_arguments() {
+        let mut s = setup(&PROFILE.replace(
+            "[slipdock]",
+            "[myloader]\nignore-errors = 1146\n\n[slipdock]",
+        ));
+        s.ctx.settings.options.myloader.arguments = "--threads 4 --ignore-errors 1227,1062".into();
+        let profile = s.ctx.profile("example").unwrap();
+        let extra = ["--ignore-errors=1050".to_string()];
+        assert_eq!(
+            ignored_errors(&s.ctx, &profile, "myloader", &extra),
+            ["1050", "1062", "1146", "1227"]
+        );
+        assert!(ignored_errors(&s.ctx, &profile, "mydumper", &[]).is_empty());
+    }
+
+    #[test]
+    fn checksum_skip_is_read_from_wherever_it_is_set_and_the_last_wins() {
+        let mut s = setup(PROFILE);
+        let profile = s.ctx.profile("example").unwrap();
+        assert!(!skips_checksums(&s.ctx, &profile, &[]));
+        s.ctx.settings.options.myloader.arguments = "--threads 4 --checksum skip".into();
+        assert!(skips_checksums(&s.ctx, &profile, &[]));
+        // A run's own argument comes last and wins.
+        assert!(!skips_checksums(
+            &s.ctx,
+            &profile,
+            &["--checksum=warn".to_string()]
+        ));
+        assert!(skips_checksums(
+            &s.ctx,
+            &profile,
+            &["--checksum".to_string(), "SKIP".to_string()]
+        ));
     }
 
     #[test]

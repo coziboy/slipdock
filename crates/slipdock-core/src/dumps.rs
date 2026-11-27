@@ -150,13 +150,21 @@ fn load_stamp(file: &str) -> &str {
     file.rsplit_once('_').map_or(file, |(_, stamp)| stamp)
 }
 
+/// A log with each JSON event as one readable line; text lines stay.
+fn readable_log(text: &str) -> String {
+    text.lines()
+        .map(|line| crate::tool_event::readable_line(line).unwrap_or_else(|| line.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn read_log(path: PathBuf, title: String) -> DumpLog {
     let size = fs::metadata(&path).map_or(0, |meta| meta.len());
     // Only the end of the file is read: a log can be many megabytes, and
     // what went wrong is at its end.
     let (text, cut) = match crate::run::read_end(&path, crate::run::TAIL_BYTES) {
         // A log may hold bytes that are not UTF-8 (a table name, a value).
-        Ok((bytes, cut)) => (String::from_utf8_lossy(&bytes).into_owned(), cut),
+        Ok((bytes, cut)) => (readable_log(&String::from_utf8_lossy(&bytes)), cut),
         Err(error) => (format!("cannot read the log: {error}"), false),
     };
     DumpLog {
@@ -201,6 +209,64 @@ fn count_tables(names: &[String]) -> usize {
         .iter()
         .filter(|name| name.contains("-schema.sql") && !name.contains("-schema-create.sql"))
         .count()
+}
+
+/// The tables of a dump, in name order, each with its data files
+/// (`<db>.<table>.<n>.sql[.zst]`, one per chunk) and their sizes. Views are left out: their
+/// stand-in `-schema.sql` file comes with a `-schema-view.sql` file.
+pub fn data_files_per_table(dir: &Path) -> Vec<crate::tool_event::TableFiles> {
+    tables_with_files(&file_names(dir))
+        .into_iter()
+        .map(|(name, files)| crate::tool_event::TableFiles {
+            name,
+            files: files
+                .into_iter()
+                .map(|file| {
+                    let size = fs::metadata(dir.join(&file)).map_or(0, |meta| meta.len());
+                    (file, size)
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// The tables of a dump, each with the names of its data files.
+fn tables_with_files(names: &[String]) -> Vec<(String, Vec<String>)> {
+    // "<db>.<table>" up to the first ".sql"/".dat" with "suffix" after it.
+    let stem = |name: &str, suffix: &str| -> Option<String> {
+        let at = name.find(suffix)?;
+        let after = &name[at + suffix.len()..];
+        (after.is_empty() || after.starts_with('.')).then(|| name[..at].to_string())
+    };
+    let table = |db_table: &str| db_table.split_once('.').map(|(_, t)| t.to_string());
+    let views: Vec<String> = names
+        .iter()
+        .filter_map(|name| stem(name, "-schema-view.sql"))
+        .collect();
+    let mut tables: Vec<(String, Vec<String>)> = names
+        .iter()
+        .filter_map(|name| stem(name, "-schema.sql"))
+        .filter(|db_table| !views.contains(db_table))
+        .filter_map(|db_table| {
+            let files = names
+                .iter()
+                .filter(|name| {
+                    let data = stem(name, ".sql").or_else(|| stem(name, ".dat"));
+                    data.and_then(|data| {
+                        let (prefix, chunk) = data.rsplit_once('.')?;
+                        let is_chunk =
+                            !chunk.is_empty() && chunk.bytes().all(|b| b.is_ascii_digit());
+                        Some(is_chunk && prefix == db_table)
+                    })
+                    .unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+            Some((table(&db_table)?, files))
+        })
+        .collect();
+    tables.sort();
+    tables
 }
 
 /// The database a dump was taken from, read from the name of its
@@ -491,5 +557,40 @@ mod tests {
         assert_eq!(human_size(23 * 1024 * 1024), "23M");
         assert_eq!(human_size(4_509_715_660), "4.2G");
         assert_eq!(human_size(1024 * 1024 * 1024 * 1024 * 5), "5.0T");
+    }
+
+    #[test]
+    fn data_files_are_listed_per_table_and_views_are_left_out() {
+        let names: Vec<String> = [
+            "metadata",
+            "shop-schema-create.sql.zst",
+            "shop.big-schema.sql.zst",
+            "shop.big.00001.sql.zst",
+            "shop.big.00002.sql.zst",
+            "shop.empty-schema.sql.zst",
+            "shop.small-schema.sql.zst",
+            "shop.small.00000.sql.zst",
+            "shop.vw-schema-view.sql.zst",
+            "shop.vw-schema.sql.zst",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            tables_with_files(&names),
+            [
+                (
+                    "big".to_string(),
+                    vec![
+                        "shop.big.00001.sql.zst".to_string(),
+                        "shop.big.00002.sql.zst".to_string()
+                    ]
+                ),
+                ("empty".to_string(), vec![]),
+                (
+                    "small".to_string(),
+                    vec!["shop.small.00000.sql.zst".to_string()]
+                )
+            ]
+        );
     }
 }
