@@ -12,19 +12,21 @@
 
 use std::path::PathBuf;
 
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::*;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use slipdock_core::dumps;
 use slipdock_core::job::Prepared;
 use slipdock_core::report::{self, Line, Report};
 use slipdock_core::run::{Cancel, Event, LogReader, Progress};
+use slipdock_core::tool_event::{self, DateTime, Level, RunState, Stage, TableStatus};
 
 use crate::log_view::LogView;
 use crate::state::core;
+use crate::theme;
 use crate::widgets;
 
 /// The most of the log that is read at once. A run adds far less than
@@ -36,6 +38,8 @@ pub struct RunView {
     summary: Vec<Line>,
     log: PathBuf,
     progress: Option<Progress>,
+    /// The stages of this kind of run, for the stepper.
+    stages: Vec<Stage>,
     /// Reads what the run added to the log file since the last read.
     reader: LogReader,
     /// The log box, with the lines read so far.
@@ -65,6 +69,7 @@ impl RunView {
             summary,
             log: prepared.log.clone(),
             progress: None,
+            stages: prepared.stages(),
             reader: LogReader::new(&prepared.log, READ_BYTES),
             log_view: cx.new(|_| LogView::new(true)),
             log_open: false,
@@ -136,7 +141,7 @@ impl RunView {
                     let lines = self.reader.read_new();
                     self.add_to_log(lines, cx);
                 }
-                self.progress = Some(progress);
+                self.progress = Some(*progress);
             }
             Event::Finished(outcome) => {
                 // After a failed run the report shows what the tool printed,
@@ -182,12 +187,29 @@ impl Render for RunView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let running = self.cancel.is_some();
         let status = self.progress.as_ref().map(|progress| {
-            let mut text = format!("{} {}", self.label, report::duration(progress.elapsed));
-            if let Some((files, size)) = progress.written {
-                text.push_str(&format!(" · {files} files · {}", dumps::human_size(size)));
-            }
-            text
+            format!(
+                "{} {}{}",
+                self.label,
+                report::duration(progress.elapsed),
+                report::progress_detail(progress)
+            )
         });
+        let state = self.progress.as_ref().map(|progress| &progress.state);
+        // One time of day for the whole frame, so the bars and the line
+        // above them agree.
+        let now = Some(tool_event::now());
+        let percent = state
+            .and_then(|state| state.share(now))
+            .map(|share| share.fraction * 100.);
+        let stepper = state
+            .filter(|state| state.json)
+            .map(|state| stage_stepper(&self.stages, state.stage, cx));
+        let tables = state
+            .filter(|state| !state.table_rows.is_empty())
+            .map(|state| table_list(state, now, cx));
+        let problems = state
+            .filter(|state| !state.problems.is_empty())
+            .map(|state| problem_list(state, cx));
 
         v_flex()
             .gap_5()
@@ -226,6 +248,16 @@ impl Render for RunView {
                                 .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
                         ),
                 )
+                .children(stepper)
+                .when_some(percent, |this, percent| {
+                    this.child(
+                        gpui_kit::component::progress::Progress::new("run-progress")
+                            .value(percent)
+                            .accessibility_label("Progress"),
+                    )
+                })
+                .children(tables)
+                .children(problems)
             })
             .when(!self.log_view.read(cx).is_empty(), |this| {
                 let open = self.log_open;
@@ -299,4 +331,170 @@ impl Render for RunView {
                 )
             })
     }
+}
+
+/// The stages of the run in a row: those done dimmed with a check, the
+/// current one in bold, those to come dimmed.
+fn stage_stepper(stages: &[Stage], current: Option<Stage>, cx: &App) -> Div {
+    let theme = cx.theme();
+    let mut row = h_flex().flex_wrap().gap_x_3().gap_y_1().text_sm();
+    for (i, stage) in stages.iter().enumerate() {
+        if i > 0 {
+            row = row.child(div().text_color(theme.muted_foreground).child("›"));
+        }
+        let item = div().child(stage.name());
+        row = row.child(match current {
+            Some(now) if *stage == now => item
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.foreground),
+            Some(now) if *stage < now => div()
+                .text_color(theme.muted_foreground)
+                .child(format!("✓ {}", stage.name())),
+            _ => item.text_color(theme.muted_foreground),
+        });
+    }
+    row
+}
+
+/// Rows a table list shows before it scrolls in its box.
+const TABLE_ROWS_IN_VIEW: usize = 7;
+
+/// Every table of the run in name order, so a row never moves: a mark, the
+/// name, a bar and how far it is. The heading names the tables in work, so
+/// they can be found in a long list.
+pub(crate) fn table_list(state: &RunState, now: Option<DateTime>, cx: &App) -> Div {
+    let theme = cx.theme();
+    let mut rows = v_flex();
+    for (index, row) in state.table_rows.iter().enumerate() {
+        let detail = row.detail(state, now);
+        let mismatch = row.checksum_ok == Some(false);
+        let active = matches!(
+            row.status,
+            TableStatus::Creating | TableStatus::Rows | TableStatus::Indexing
+        );
+        let fill = if mismatch {
+            theme.warning
+        } else if row.status == TableStatus::Done {
+            theme.success
+        } else {
+            theme.foreground
+        };
+        let mark = div()
+            .w(px(16.))
+            .flex_shrink_0()
+            .flex()
+            .justify_center()
+            .map(|mark| match row.status {
+                _ if mismatch => mark.child(
+                    Icon::new(IconName::TriangleAlert)
+                        .xsmall()
+                        .text_color(theme.warning),
+                ),
+                TableStatus::Done => mark.child(
+                    Icon::new(IconName::Check)
+                        .xsmall()
+                        .text_color(theme.success),
+                ),
+                _ if active => mark.child(Spinner::new().xsmall()),
+                _ => mark,
+            });
+        rows = rows.child(
+            h_flex()
+                .id(("run-table", index))
+                .role(Role::ListItem)
+                .aria_label(format!("{}, {detail}", row.name))
+                .gap_3()
+                .px_2()
+                .py_1()
+                .min_w_0()
+                .text_sm()
+                .child(mark)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .font_family(theme.mono_font_family.clone())
+                        .when(row.status == TableStatus::Waiting, |name| {
+                            name.text_color(theme.muted_foreground)
+                        })
+                        .when(active, |name| name.font_weight(FontWeight::SEMIBOLD))
+                        .child(row.name.clone()),
+                )
+                .child(
+                    // A square bar, like the size bars: a track in Rule
+                    // filled in ink while in work, in Success when done.
+                    div()
+                        .w(px(96.))
+                        .h(px(4.))
+                        .flex_shrink_0()
+                        .bg(theme.border)
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(row.share(state, now).fraction))
+                                .bg(fill),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(104.))
+                        .flex_shrink_0()
+                        .text_right()
+                        .text_xs()
+                        .text_color(if mismatch {
+                            theme.warning
+                        } else {
+                            theme.muted_foreground
+                        })
+                        .child(detail),
+                )
+                // Seen by the layout tests; nothing outside them.
+                .test_support(),
+        );
+    }
+    widgets::section("Tables", cx)
+        .child(widgets::hint(report::tables_heading(state), cx))
+        .child(
+            div()
+                .id("run-tables")
+                .max_h(px(220.))
+                .overflow_y_scroll()
+                // Only a list long enough to scroll keeps the scroll from
+                // the page behind it.
+                .when(state.table_rows.len() > TABLE_ROWS_IN_VIEW, |this| {
+                    this.occlude()
+                })
+                .p_1()
+                .rounded(theme::RADIUS)
+                .border_1()
+                .border_color(theme.border)
+                .child(rows),
+        )
+}
+
+/// The problems logged so far, while the run goes on. At most a few; the
+/// report lists them all.
+const SHOWN_PROBLEMS: usize = 5;
+
+fn problem_list(state: &RunState, cx: &App) -> Div {
+    let mut list = v_flex().gap_2().min_w_0();
+    for problem in state.problems.iter().take(SHOWN_PROBLEMS) {
+        // By level: myloader marks some warnings fatal and goes on.
+        let tone = if problem.level >= Level::Error {
+            widgets::Tone::Danger
+        } else {
+            widgets::Tone::Warning
+        };
+        let text = match problem.count {
+            1 => problem.text.clone(),
+            n => format!("{} (×{n})", problem.text),
+        };
+        list = list.child(widgets::notice(tone, &text, cx));
+    }
+    let more = state.problems.len().saturating_sub(SHOWN_PROBLEMS);
+    if more > 0 {
+        list = list.child(widgets::hint(format!("{more} more in the log"), cx));
+    }
+    list
 }

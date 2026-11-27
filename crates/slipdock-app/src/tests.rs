@@ -2103,3 +2103,59 @@ fn missing_tools_are_installed_from_the_top_of_the_tools_screen(cx: &mut TestApp
     });
     cx.run_until_parked();
 }
+
+/// Draws the table list of a run on its own.
+struct TableListView(slipdock_core::tool_event::RunState);
+
+impl gpui_kit::Render for TableListView {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::{ParentElement as _, Styled as _};
+        gpui_kit::div()
+            .size_full()
+            .p_4()
+            .child(crate::run_view::table_list(&self.0, None, cx))
+    }
+}
+
+/// A load's table list names every table, says how far each one is, and a
+/// long name does not push the bar out of the smallest window.
+#[gpui_kit::test]
+fn the_table_list_of_a_load_fits_the_smallest_window(cx: &mut TestAppContext) {
+    use slipdock_core::tool_event::{RunState, TableFiles};
+    let long = "customer_reporting_warehouse_events_by_region_and_quarter_archive";
+    let table = |name: &str, files: usize| TableFiles {
+        name: name.into(),
+        files: (0..files)
+            .map(|i| (format!("db.{name}.{i:05}.sql.zst"), 1000))
+            .collect(),
+    };
+    let mut tables = vec![table(long, 4), table("targets", 22)];
+    tables.extend((0..60).map(|i| table(&format!("table_{i:02}"), 1)));
+    let mut state = RunState::for_load(tables);
+    state.take_text(concat!(
+        r#"{"ts":"2026-11-27 16:30:01.0","level":"INFO","event":"restore_data_progress","status":"progress","message":"restoring data chunk","fatal":false,"thread_id":"1","table":"targets","progress_value":"1","progress_total":"86"}"#,
+        "\n",
+    ));
+    let (window, _) = cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::theme::apply(cx);
+        gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
+            cx.new(|_| TableListView(state))
+        })
+        .unwrap()
+    });
+    let mut cx = VisualTestContext::from_window(window, cx);
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(520.), gpui_kit::px(420.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert_inside(window, 520., "table list");
+        // Every table has its row, in work or waiting.
+        window.find_by_label("targets, 0%");
+        window.find_by_label(&format!("{long}, waiting"));
+    });
+}

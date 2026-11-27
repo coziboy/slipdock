@@ -301,6 +301,10 @@ The library's buttons, in four forms.
 - **Quoted name:** a name the user has to type or confirm is set off on Quiet in bold or semibold monospace.
 - **Log box** (`log_view.rs`): the library's read-only editor with a copy button above it. Scroll bars are always on show, so the box says at a glance that there is more.
 
+### Run table list
+- **Table list** (`run_view::table_list`): while a dump or load runs, a "Tables" card lists every table in name order, so a row never moves. A load knows them all from the dump folder at the start; a dump adds each one as mydumper writes its schema. The hint over the list says how many are done and names the tables in work ("3 of 65 tables done · now targets"), so they can be found in a long list. The list scrolls in its own bordered box, at most 220px high, like the tables of the Dump form.
+- **Row:** a 16px mark column (a small spinner while in work, a check in Success when done, a triangle in Warning when the checksum differs, nothing while waiting), the table name in monospace (Dim while waiting, semibold while in work), a square bar 96px by 4px (a track in Rule, filled in ink while in work, in Success when done, in Warning on a checksum difference), and the state in 12px Dim at the end: a share while its rows are written or loaded and when done ("40%", "100%"), else a word ("waiting", "creating", "indexing"). Never a number of files: how a tool splits a table is not the user's concern. In a load the share is by bytes: the data files finished, plus for each file in work an estimate from the speed of the files before it, never past 95% of that file until myloader moves on. A share with an estimate in it reads "~40%"; it settles to the exact value when the file is done. The overall bar and the line above it are counted the same way. The text of the rows and the hint comes from the core (`TableProgress::detail`, `report::tables_heading`).
+
 ### Report lines
 `widgets::lines` draws the report that the core builds: a label column of 90px in Dim, then the value; a verdict line with a small icon in Success, Danger or Warning; quoted tool output in Dim.
 
